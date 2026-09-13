@@ -5,9 +5,13 @@ numeric system readouts, live transcript, and full voice interaction.
 
 Threading model (unchanged from v1 — voice architecture is untouched):
 - Voice listener: background thread (captures + transcribes audio)
-- Command processing: background thread (brain + simulated execution)
+- Command processing: background thread (brain + controlled automation)
 - TTS: background thread (synthesis + playback)
 - UI: main thread only, updated through VoiceBridge signals.
+
+The brain runs the automation pipeline itself (intent -> plan -> tool ->
+verification -> response). This window still orchestrates the EXECUTING
+animation, latency reporting, and honest success/failure flashes.
 
 Visual additions in this version:
 - Shared NovaStateAnimator drives orb/rings/waveform/status in sync.
@@ -40,15 +44,6 @@ from ui.settings_dialog import SettingsDialog
 from voice.listener import Listener
 from voice.text_to_speech import create_tts_provider
 from brain.agent import NovaAgent
-
-# Map text keywords to simulated app opens (Phase 2 replaces with real actions)
-EXECUTE_APP_MAP = {
-    "chrome": "Chrome",
-    "notepad": "Notepad",
-    "calculator": "Calculator",
-    "youtube": "YouTube in your browser",
-    "browser": "your default browser",
-}
 
 STATE_LABELS = {
     "IDLE": "READY",
@@ -496,46 +491,42 @@ class MainWindow(QMainWindow):
         self._append_history("NOVA", text)
 
     def _on_action(self, command: str):
-        """Simulated execution (Phase 2 will call real automation here)."""
-        text = command.lower()
-        app = None
-        for key in EXECUTE_APP_MAP:
-            if key in text:
-                app = EXECUTE_APP_MAP[key]
-                break
-
+        """Automation already ran inside the brain worker; animate + report."""
         self._set_state("EXECUTING")
         self.command_label.setText(command)
         self.meta_label.setText("EXECUTING…")
         self.meta_label.setStyleSheet(
             "QLabel#task_meta { color: #FBBF24; font-size: 10.5px; }"
         )
-        if app:
-            log.info("SIMULATED ACTION: opening %s", app)
-            self._append_history(
-                "SYSTEM",
-                f"[SIMULATED] Opening {app} — real automation ships in Phase 2",
-            )
-        else:
-            self._append_history("SYSTEM", "[SIMULATED] Executing action")
+
+        ok = getattr(self.brain, "last_action_ok", False)
+        self._append_history(
+            "SYSTEM",
+            (f"Automation complete: {command}" if ok else f"Automation failed: {command}"),
+        )
 
         threading.Thread(
-            target=self._execute_pipeline, args=(app,), daemon=True
+            target=self._execute_pipeline, daemon=True
         ).start()
 
-    def _execute_pipeline(self, app: Optional[str]):
-        """Background: animate progress, then speak the reply and flash success."""
-        steps = 16
-        for i in range(1, steps + 1):
-            self.bridge.task_progress.emit(i / steps)
-            time.sleep(0.045)
+    def _execute_pipeline(self, _app=None):
+        """Background: brief pulse, then speak the verified reply + flash."""
+        for i in range(1, 17):
+            self.bridge.task_progress.emit(i / 16)
+            time.sleep(0.035)
 
         self.bridge.state_changed.emit("SPEAKING")
-        reply = self._latest_response or (f"Opening {app}." if app else "Done.")
+        reply = self._latest_response or "Done."
         self._speak_worker(reply)
         self.bridge.state_changed.emit("IDLE")
         self.bridge.task_progress.emit(0.0)
-        self._flash(f"✓ Task complete — {app if app else 'request finished'}", "success")
+
+        ok = getattr(self.brain, "last_action_ok", False)
+        summary = getattr(self.brain, "last_action_summary", "") or (
+            "Task complete" if ok else "Task failed"
+        )
+        self._flash(f"✓ {summary}" if ok else f"⚠ {summary}",
+                    "success" if ok else "error")
 
     def _speak_worker(self, text: str):
         try:

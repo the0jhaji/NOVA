@@ -410,4 +410,148 @@ described in §11–§13 and are unchanged by the visual upgrade.
 
 ---
 
-**NOVA** — Phase 1 complete, Aurora Core UI upgrade (Visual v2) shipped. The foundation is ready for automation, agentic tasks, vision, and memory.
+## 20. Windows Automation (Phase 2)
+
+NOVA can now act on the system through a **secure, white-listed tool layer**.
+The voice/UI brain you already know now understands natural-language commands
+(English, Hindi, Hinglish, and Devanagari) and turns them into **typed, verified
+tool calls** — NOVA never builds or runs an arbitrary shell command.
+
+### 20.1 Architecture: brain → intent → plan → tool → verify → reply
+
+```
+     user speaks ──► speech_to_text ──► brain/NovaAgent
+                                          │  classify (risk: SAFE / CONFIRMATION_REQUIRED / HIGH_RISK)
+                                          │  map intent → ActionPlan[ActionStep...]   (params extracted, typed)
+                                          ▼
+                              AutomationEngine.execute_plan(plan, approved=?)
+                                          │  risk gate (blockHIGH_RISK unless explicit allow; block
+                                          │  CONFIRMATION_REQUIRED unless the user says yes first)
+                                          ▼
+                             controlled tool fn (audited, fixed subprocess/py API calls)
+                                          │  verification (tasklist, path checks, volume readback)
+                                          ▼
+                  ToolResult(ok, verified, message) ──► honest reply ("Done" only when verified)
+                                          │
+                                          └─► UI flash ✓/⚠ via brain.last_action_ok
+```
+
+The flow is the one you asked for: **brain → intent → action planner → tool
+selection → tool execution → verification → response**.
+
+### 20.2 Tool catalogue and their risk
+
+All tools live in `automation/tools/`. Each is a plain function taking typed
+parameters; none of them invokes `shell=True`.
+
+| Tool | Risk | What it does |
+|---|---|---|
+| `open_application` | SAFE | Opens an app by name/alias; verifies a process appeared |
+| `close_application` | SAFE | Closes an app (graceful `taskkill`, no `/F` unless verified needed); verifies it exited |
+| `open_url` | SAFE | Opens a URL in the default browser (`ShellExecuteW`) |
+| `open_folder` | SAFE | Opens Explorer at a location (supports Windows CLSIDs, e.g. "This PC") |
+| `create_folder` / `create_file` | SAFE | Creates a folder / text file |
+| `move_file` / `copy_file` / `rename_file` | SAFE | File operations into a resolved destination |
+| `search_files` | SAFE | Shallow-scanned filename search under a root |
+| `take_screenshot` | SAFE | Saves a PNG to `Pictures\NOVA Screenshots` (or `SCREENSHOT_DIR`) |
+| `type_text` | SAFE | Types text (Unicode-safe; falls back to clipboard+Ctrl+V) |
+| `press_key` | SAFE | Sends a key chord, e.g. Ctrl+N |
+| `mouse_click` | SAFE | Clicks (optionally at x,y; double-click supported) |
+| `volume_control` | SAFE | Set/up/down/mute volume; reads level back to confirm |
+| `install_software` | CONFIRMATION_REQUIRED | Installs via `winget` — always asks first |
+| `delete_file` | CONFIRMATION_REQUIRED | Deletes a file/folder — always asks first |
+
+Tools NOT in this list cannot be called by the brain — an unknown tool is never
+dispatched.
+
+### 20.3 Permission model
+
+- **SAFE** tools run immediately after intent mapping.
+- **CONFIRMATION_REQUIRED** tools (delete, install) are *staged*: NOVA replies
+  "This will delete X — say yes to confirm, or say cancel." Nothing runs until
+  the user confirms with "yes / haan / हाँ / confirm / theek hai…".
+- **HIGH_RISK** actions never run silently. They are refused up-front with an
+  explanation. A HIGH_RISK step also blocks the whole plan (no partial runs).
+- `AUTOMATION_AUTO_CONFIRM=true` skips the spoken confirmation prompt for
+  CONFIRMATION_REQUIRED tools only (never silent high-risk).
+- `AUTOMATION_ALLOW_HIGH_RISK=true` permits HIGH_RISK steps *only when they also
+  pass the user's explicit confirmation*. This flips a safety switch — keep it
+  off unless you know what you are doing.
+
+### 20.4 Safety model
+
+- **Protected roots** (`C:\Windows`, `Program Files`, `Program Files (x86)`,
+  `ProgramData`, `$Recycle.Bin`, `System Volume Information`) automatically
+  escalate any file operation to HIGH_RISK — the plan is refused.
+- High-risk **phrases** ("format the disk", "disable firewall", "wipe the
+  drive", "change partition", "delete system files", registry/policy edits) are
+  refused before any tool selection happens — `automation/safety.py`.
+- Every action is **verified after the fact**: the process is running/stopped,
+  the path exists/gone, the volume level matches — only then does NOVA say
+  "Done". Otherwise NOVA says *"I couldn't complete that because …"*.
+- No unrestricted shell: parameters are never interpolated into a shell
+  command string.
+
+### 20.5 Supported commands (examples)
+
+```
+Open Chrome                      Chrome kholo              क्रोम खोलो
+Open YouTube                     Open VS Code and create a new file
+Open Downloads / Open This PC    Close Notepad              नोटपैड बंद करो
+Desktop pe ek folder banao naam Projects
+Downloads mein Python folder banao
+Volume 50 percent karo           Volume thoda kam karo
+Take a screenshot                Type hello               Press Ctrl+N
+find my resume in Downloads      Copy notes.txt to backup
+create file expenses.txt in Desktop
+delete file hello.txt            (asks confirmation)
+install software Notepad++       (asks confirmation)
+What time is it? / Kitne baje? / समय क्या हुआ?
+Who are you? / Tumhara naam kya hai?
+what can you do
+bye / quit                       (closes NOVA; "close" alone no longer quits)
+```
+
+### 20.6 New dependencies
+
+Added to `requirements.txt` (UI and voice deps are unchanged):
+
+- `Pillow` — screenshot capture (`automation/tools/screen.py`)
+- `pyautogui` — keyboard/mouse synthesis (`automation/tools/input_tools.py`)
+- `pycaw>=2024` (+ `comtypes`) — volume control and readback
+  (`automation/tools/systools.py`)
+
+`winget` (built into Windows 10/11) powers `install_software`.
+
+### 20.7 Configuration (`.env` / `.env.example`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTOMATION_AUTO_CONFIRM` | `false` | Auto-approve CONFIRMATION_REQUIRED tools |
+| `AUTOMATION_ALLOW_HIGH_RISK` | `false` | Allow HIGH_RISK steps after explicit confirm |
+| `SCREENSHOT_DIR` | *(empty)* → `Pictures\NOVA Screenshots` | Where screenshots are saved |
+| `APPS_CONFIG_FILE` | `apps_config.json` | Extra app aliases (JSON keyed by spoken name) |
+| `SEARCH_ROOT` | *(empty)* → user home | Default root for `search_files` |
+
+### 20.8 Troubleshooting
+
+- A command is answered with "I couldn't complete that because …" → read the
+  reason (missing file, app not found, verification failed). NOVA never claims
+  success it didn't verify.
+- "That action is too risky" → the intent or a protected path tripped a
+  HIGH_RISK gate; NOVA will not override it by default.
+- Delete/install paused on "say yes to confirm" → answer yes / haan / cancel.
+- Tools silently not working (screenshot, keys, volume) → confirm `Pillow`,
+  `pyautogui`, `pycaw` are installed (`pip install -r requirements.txt`).
+
+### 20.9 Roadmap update
+
+- **Phase 1** — Core assistant + voice controls: ✅ done (see §1–§19).
+- **Phase 2** — Secure Windows automation with risk-gated, verified tools:
+  ✅ shipped (§20).
+- **Next** — agentic multi-step planning with memory, vision, and the
+  permission surface extended to schedules and system health.
+
+---
+
+**NOVA** — Phase 1 core voice + Aurora Core UI (Visual v2) shipped; Phase 2 adds a secure, risk-gated Windows automation layer with multilingual natural-language control and verified execution.

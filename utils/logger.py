@@ -16,16 +16,19 @@ class SafeConsoleHandler(logging.StreamHandler):
 
     def emit(self, record: logging.LogRecord):
         try:
-            super().emit(record)
-        except UnicodeEncodeError:
-            # Fall back: encode with replacement to lossy ASCII
             message = self.format(record)
+        except Exception:
+            self.handleError(record)
+            return
+        try:
+            self.stream.write(message + self.terminator)
+            self.flush()
+        except UnicodeEncodeError:
             try:
-                safe = message.encode(sys.stdout.encoding or "utf-8",
-                                      errors="replace").decode(
-                    sys.stdout.encoding or "utf-8", errors="ignore")
-                sys.stdout.write(safe + "\n")
-                sys.stdout.flush()
+                enc = getattr(self.stream, "encoding", None) or "utf-8"
+                safe = message.encode(enc, errors="replace").decode(enc, errors="ignore")
+                self.stream.write(safe + self.terminator)
+                self.flush()
             except Exception:
                 self.handleError(record)
         except Exception:

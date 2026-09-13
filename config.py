@@ -49,13 +49,36 @@ class WakeWordConfig:
 
 
 @dataclass(frozen=True)
+class AutomationConfig:
+    """
+    Windows automation layer settings.
+
+    - auto_confirm:      if True, CONFIRMATION_REQUIRED actions run without an
+                         explicit spoken "yes". Default False (safest).
+    - allow_high_risk:   if True, HIGH_RISK actions *may* run after explicit
+                         confirmation. No high-risk tools ship in this phase,
+                         so this is effectively a guard for future tools.
+    - screenshot_dir:    where screenshot PNGs are saved (default:
+                         Pictures\\NOVA Screenshots).
+    - apps_config:       JSON file with custom app launch commands.
+    - search_root:       default folder to search files in (default: user home).
+    """
+    auto_confirm: bool = field(default_factory=lambda: _env_bool("AUTOMATION_AUTO_CONFIRM", False))
+    allow_high_risk: bool = field(default_factory=lambda: _env_bool("AUTOMATION_ALLOW_HIGH_RISK", False))
+    screenshot_dir: str = field(default_factory=lambda: _env("SCREENSHOT_DIR", ""))
+    apps_config: str = field(default_factory=lambda: _env("APPS_CONFIG_FILE", "apps_config.json"))
+    search_root: str = field(default_factory=lambda: _env("SEARCH_ROOT", ""))
+
+
+@dataclass(frozen=True)
 class NovaConfig:
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
+    automation: AutomationConfig = field(default_factory=AutomationConfig)
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", False))
     app_name: str = "NOVA"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
 
 
 # Singleton config instance

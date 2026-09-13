@@ -85,7 +85,7 @@ class Listener:
 
     def start(self):
         """Start listening in background thread."""
-        if self._listening:
+        if self._listening or (self._thread and self._thread.is_alive()):
             return
         if not self.microphone:
             if not self.initialize():
@@ -103,7 +103,11 @@ class Listener:
         self._listening = False
         self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=6)
+            if self._thread.is_alive():
+                log.warning("Listener thread did not stop within the timeout")
+            else:
+                self._thread = None
         self._emit_state("IDLE")
         log.info("Listener stopped")
 

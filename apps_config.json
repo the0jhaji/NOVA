@@ -1,0 +1,13 @@
+{
+  "apps": {
+    "steam": {
+      "cmd": ["C:\\Program Files (x86)\\Steam\\steam.exe"],
+      "verify": "steam.exe"
+    },
+    "spotify": {
+      "cmd": ["spotify.exe"],
+      "verify": "Spotify.exe"
+    }
+  },
+  "note": "Add custom apps here. Each name is the spoken keyword NOVA should recognise. 'cmd' is the exact launch command (tokens, no shell); 'verify' is the process image name used to confirm the app started."
+}

@@ -5,3 +5,9 @@ edge-tts>=6.1.0
 pyttsx3>=2.90
 pygame>=2.5.0
 python-dotenv>=1.0.0
+
+# Windows automation layer (Phase 2 tools)
+Pillow>=10.0.0           # screenshots
+pyautogui>=0.9.54        # type_text / press_key / mouse_click
+pycaw>=2024            # volume control (Core Audio)
+comtypes>=1.2.0          # dependency of pycaw
