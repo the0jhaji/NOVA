@@ -26,7 +26,7 @@ def main():
         pass
 
     log.info("Starting %s v%s", config.app_name, config.app_version)
-    log.info("STT=%s TTS=%s wake=%s", config.stt.provider, config.tts.provider,
+    log.info("STT=%s TTS=%s wake=%s", config.stt.provider, config.voice.provider,
              config.wake_word.word if config.wake_word.enabled else "OFF")
 
     window = MainWindow()

@@ -35,14 +35,14 @@ from utils.logger import log
 from ui.theming import PALETTE, STATE_DEFS
 from ui.state_engine import NovaStateAnimator
 from ui.ambient import AmbientBackground
-from ui.ring_field import EnergyRings
-from ui.nova_orb import NovaOrb
+from ui.avatar import AvatarStage
 from ui.waveform import WaveformWidget
 from ui.glass import GlassPanel, SectionTitle, FlashChip
 from ui.styles.theme import QSS as THEME_QSS
 from ui.settings_dialog import SettingsDialog
 from voice.listener import Listener
-from voice.text_to_speech import create_tts_provider
+from voice.controller import voice as voice_ctl
+from voice.language import detect_lang
 from brain.agent import NovaAgent
 
 STATE_LABELS = {
@@ -51,6 +51,7 @@ STATE_LABELS = {
     "PROCESSING": "THINKING",
     "SPEAKING": "SPEAKING",
     "EXECUTING": "EXECUTING",
+    "SUCCESS": "DONE",
     "ERROR": "ERROR",
 }
 STATE_CAPTIONS = {
@@ -59,6 +60,7 @@ STATE_CAPTIONS = {
     "PROCESSING": "Processing your request",
     "SPEAKING": "Speaking response",
     "EXECUTING": "Executing task",
+    "SUCCESS": "Task complete",
     "ERROR": "Something went wrong",
 }
 
@@ -89,23 +91,6 @@ class _Root(QWidget):
         super().resizeEvent(event)
 
 
-class _CoreDisplay(QWidget):
-    """Stacked core: energy rings behind + orb centred on top."""
-
-    def __init__(self, animator, parent=None):
-        super().__init__(parent)
-        self.rings = EnergyRings(animator, self)
-        self.orb = NovaOrb(animator, self, size=232)
-        self._animator = animator
-
-    def resizeEvent(self, event):
-        self.rings.setGeometry(self.rect())
-        ox = max((self.width() - self.orb.width()) // 2, 0)
-        oy = max((self.height() - self.orb.height()) // 2, 0)
-        self.orb.move(ox, oy)
-        super().resizeEvent(event)
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -116,10 +101,10 @@ class MainWindow(QMainWindow):
         self._drag_offset: Optional[tuple[int, int]] = None
         self._is_closing = False
         self._latest_response: str = ""
+        self._latest_lang: str = "auto"
 
         # Core components (identical voice architecture)
         self.brain = NovaAgent()
-        self.tts = create_tts_provider()
         self.bridge = VoiceBridge()
         self.listener = Listener()
 
@@ -235,9 +220,8 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(8)
 
-        core = _CoreDisplay(self.animator)
-        core.setFixedSize(520, 340)
-        col.addWidget(core, 1, Qt.AlignmentFlag.AlignHCenter)
+        self.avatar = AvatarStage(self.animator)
+        col.addWidget(self.avatar, 1, Qt.AlignmentFlag.AlignHCenter)
 
         self.waveform = WaveformWidget(self.animator, width=470, height=50)
         col.addWidget(self.waveform, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -286,9 +270,9 @@ class MainWindow(QMainWindow):
 
         # Static rows
         self.sys_mic = self._add_row(lay, "MIC", "READY")
-        self.sys_lang = self._add_row(lay, "LANGUAGE", config.stt.language.upper())
+        self.sys_lang = self._add_row(lay, "LANGUAGE", config.voice.language_mode)
         self.sys_stt = self._add_row(lay, "SPEECH→TEXT", config.stt.provider.upper())
-        self.sys_tts = self._add_row(lay, "TEXT→SPEECH", config.tts.provider.upper())
+        self.sys_tts = self._add_row(lay, "TEXT→SPEECH", config.voice.provider.upper())
         self.sys_wake = self._add_row(lay, "WAKE WORD",
                                      f"{config.wake_word.word.upper()} · "
                                      f"{'ON' if config.wake_word.enabled else 'OFF'}")
@@ -296,9 +280,9 @@ class MainWindow(QMainWindow):
 
         lay.addSpacing(8)
         hint = QLabel(
-            "Speak or type in English, हिन्दी or Hinglish.\n"
-            "Examples:  “Chrome kholo” · “क्रोम खोलो”\n"
-            "           “YouTube open karo” · “Tell me the time”"
+            "NOVA's voice follows your language — English, हिन्दी or\n"
+            "Hinglish. Speak or type:  “Chrome kholo” · “क्रोम खोलो”\n"
+            "“YouTube open karo” · “Tell me the time”"
         )
         hint.setWordWrap(True)
         hint.setObjectName("task_meta")
@@ -394,6 +378,7 @@ class MainWindow(QMainWindow):
             "PROCESSING": "… THINKING",
             "SPEAKING": "◉ SPEAKING",
             "EXECUTING": "✓ EXECUTING",
+            "SUCCESS": "✓ DONE",
             "ERROR": "⚠ ERROR",
             "IDLE": "READY",
         }.get(state, "READY")
@@ -431,6 +416,7 @@ class MainWindow(QMainWindow):
             self._set_state("SPEAKING")
             self.animator.set_orb_text("YES?")
             reply = "Yes?"
+            self._latest_lang = "auto"
             threading.Thread(
                 target=self._speak_worker, args=(reply,), daemon=True
             ).start()
@@ -461,6 +447,7 @@ class MainWindow(QMainWindow):
         try:
             time.sleep(0.30)
             t0 = time.perf_counter()
+            self._latest_lang = detect_lang(text)
             response, action = self.brain.process(text)
             latency = (time.perf_counter() - t0) * 1000.0
             self.bridge.state_changed.emit("PROCESSING")
@@ -515,13 +502,19 @@ class MainWindow(QMainWindow):
             self.bridge.task_progress.emit(i / 16)
             time.sleep(0.035)
 
+        ok = getattr(self.brain, "last_action_ok", False)
         self.bridge.state_changed.emit("SPEAKING")
         reply = self._latest_response or "Done."
         self._speak_worker(reply)
+        if ok:
+            self.bridge.state_changed.emit("SUCCESS")
+            time.sleep(2.2)
+        else:
+            self.bridge.state_changed.emit("ERROR")
+            time.sleep(1.4)
         self.bridge.state_changed.emit("IDLE")
         self.bridge.task_progress.emit(0.0)
 
-        ok = getattr(self.brain, "last_action_ok", False)
         summary = getattr(self.brain, "last_action_summary", "") or (
             "Task complete" if ok else "Task failed"
         )
@@ -530,7 +523,7 @@ class MainWindow(QMainWindow):
 
     def _speak_worker(self, text: str):
         try:
-            self.tts.speak(text)
+            voice_ctl.speak(text, user_lang=self._latest_lang)
         except Exception as e:
             log.error("TTS failed: %s", e)
             self.bridge.error_occurred.emit(str(e))
@@ -608,5 +601,6 @@ class MainWindow(QMainWindow):
             return
         self._is_closing = True
         log.info("NOVA shutting down...")
+        voice_ctl.stop()
         self.listener.stop()
         event.accept()

@@ -160,6 +160,14 @@ Then edit `.env`:
 | `WHISPER_MODEL` | `tiny`/`base`/`small`/`medium`/`large` | `base` | Only used when STT is `whisper` |
 | `TTS_PROVIDER` | `edge-tts` / `pyttsx3` | `edge-tts` | Edge TTS needs internet |
 | `TTS_VOICE` | e.g. `en-US-AvaNeural`, `en-US-JennyNeural`, `hi-IN-SwaraNeural` | `en-US-AvaNeural` | Female neural voices recommended |
+| `VOICE_PROVIDER` | `edge-tts` / `windows-sapi` / `none` | `edge-tts` | Uses `TTS_PROVIDER` when unset |
+| `VOICE_NAME` | e.g. `en-IN-NeerjaNeural` | `en-IN-NeerjaNeural` | Default voice (uses `TTS_VOICE` when unset). Indian settings see §21 |
+| `VOICE_LANGUAGE` | `AUTO` / `ENGLISH` / `HINDI` / `HINGLISH` | `AUTO` | Reply + TTS language bias |
+| `VOICE_AUTO_LANGUAGE` | `true` / `false` | `true` | Follow the user's language in AUTO mode |
+| `VOICE_ENABLED` | `true` / `false` | `true` | Master voice switch |
+| `VOICE_VOLUME` | `0`–`100` | `100` | Speech volume |
+| `VOICE_SPEED` | `-50`…`+50` | `0` | Speaking-rate shift |
+| `VOICE_SAPI_NAME` | (SAPI name) | empty | Preferred Windows SAPI voice |
 | `RECOGNITION_LANGUAGE` | `en-US` / `hi-IN` / `auto` | `auto` | `auto` → English first |
 | `WAKE_WORD_ENABLED` | `true` / `false` | `false` | False = instant command mode ("press & speak") |
 | `WAKE_WORD` | any word | `nova` | Wake phrase |
@@ -177,7 +185,7 @@ python main.py
 When the window opens:
 
 1. Click the **🎤 MICROPHONE** button to start the voice listener
-   (the orb turns green = listening).
+   (NOVA's eyes light up green = listening).
 2. Speak a command — e.g. *"Open Chrome"* or *"Notepad kholo"*.
 3. Watch NOVA move through **LISTENING → PROCESSING → SPEAKING ∈ EXECUTING**
    as it answers.
@@ -191,10 +199,19 @@ Alternatively `--help`: NOVA currently starts with the GUI by default.
 NOVA decouples providers through two thin factories:
 
 - `voice/speech_to_text.py::create_stt_provider()` → returns an `STTProvider`.
-- `voice/text_to_speech.py::create_tts_provider()` → returns a `TTSProvider`.
+- `voice/text_to_speech.py::create_tts_provider()` → returns a `TTSProvider` (legacy).
+
+For spoken output NOVA now uses the **VoiceController**
+(`voice/controller.py`): a runtime singleton that applies volume/speed/language
+mode, auto-detects the user's language, and dispatches to a swappable
+`VoiceProvider` (`voice/providers/`). The default provider is **edge-tts**
+with Indian female neural voices — `en-IN-NeerjaNeural` (Indian English) and
+`hi-IN-SwaraNeural` (Hindi / Hinglish) — see §21.2. The original factory and
+`TTSProvider` class remain available and fully functional.
 
 To add a provider, implement the abstract base class and register it in the
 factory. The UI, brain, and listener never import a specific provider.
+Voice settings are editable live in **SETTINGS ⚙** and persist to `.env`.
 
 ### Choosing a TTS voice
 List available Edge TTS voices:
@@ -221,16 +238,18 @@ in history and in NOVA's "I heard you say…" feedback.
 
 ## 12. UI States
 
-The orb and waveform re-style for each state:
+The character, stage FX, and waveform re-style for each state (see §21 for the
+character & avatar system):
 
-| State | Orb behavior | Waveform | Color |
+| State | Character | Stage FX | Color |
 |---|---|---|---|
-| **IDLE** | Gentle breathing pulse | Slow drifting bars | Cyan |
-| **LISTENING** | Stronger pulse, audio-reactive | Spike with mic level | Green |
-| **PROCESSING** | Fast rotation + particle swarm | Pulsing waves | Purple |
-| **SPEAKING** | Rhythmic pulse | Simulated voice bars | Pink |
-| **EXECUTING** | Constant energized glow | Sustained waves | Amber |
-| **ERROR** | Sputtering, low pulse | Jitter | Red |
+| **IDLE** | Soft blink, gentle head sway | Breathing halo rings | Cyan |
+| **LISTENING** | Alert eyes, gaze track, mic-LED pulse | Audio-reactive rings | Green |
+| **PROCESSING** | Eyes up-right, one brow raised, "o" mouth | Halo arcs + "…" dots | Purple |
+| **SPEAKING** | Mouth lip-syncs to the voice | Glow pulses with speech | Rose |
+| **EXECUTING** | Determined eyes, focus glints | Progress arc around head | Amber |
+| **SUCCESS** | Grin, sparkle burst | Radiant particle burst | Emerald |
+| **ERROR** | Worried brows, frown | Glitch bars | Red |
 
 Layout highlights: brand titlebar with minimize/close, system status panel
 (CORE / LANG / STT / TTS / WAKE / MIC), command feed, live command + response
@@ -554,4 +573,108 @@ Added to `requirements.txt` (UI and voice deps are unchanged):
 
 ---
 
-**NOVA** — Phase 1 core voice + Aurora Core UI (Visual v2) shipped; Phase 2 adds a secure, risk-gated Windows automation layer with multilingual natural-language control and verified execution.
+## 21. NOVA Character & Voice Identity (Phase 3)
+
+NOVA now has a face and a voice of her own: an **original anime/cartoon AI
+girl** rendered live with QPainter, and a **natural Indian female voice** that
+follows the user's language.
+
+### 21.1 The character (no copyrights — 100% original)
+
+NOVA is drawn procedurally every frame from the shared animation engine — she
+is not a static image and no external character assets are used:
+
+- **Design.** Young-adult AI girl, big anime eyes with iris + highlights,
+  futuristic violet hair (fringe + long side locks), a teal sci-fi jacket with
+  a glowing collar "core" badge, a headset with a boom mic whose LED pulses,
+  and subtle teal stud earrings. Personality: warm, confident, a little
+  playful; professionally focused while executing tasks.
+- **Animation.** One 30 ms clock (the existing `NovaStateAnimator`) drives
+  everything — no per-widget timers:
+  - eyelids close/open on a natural blink window;
+  - gaze shifts with state (gazing up-right while thinking, tracking the
+    user while listening);
+  - head tilts and sways, hair locks sway with inertia, shoulders "breathe";
+  - eyebrows raise/lower/furrow by state;
+  - the mouth lip-syncs to the **speech envelope** while speaking (and blooms
+    into a grin on success, a worried frown on error, a small "o" while
+    thinking).
+- **Stage FX** behind the character: halo arcs, orbiting particles, a
+  progress ring while executing, radiating burst on success, glitch bars on
+  error — all tinted per state.
+- **Files.** `ui/avatar/` — `face.py` (`AnimeFace`), `stage.py`
+  (`AvatarStage`), `interface.py` (an `AvatarHost` contract so a future
+  **Live2D / sprite-rig / 3D** model can be swapped in without touching the UI).
+- **Facial states:** `IDLE · LISTENING · THINKING · SPEAKING · EXECUTING ·
+  SUCCESS · ERROR` (the new `SUCCESS` state is also reflected in `STATE_DEFS`,
+  the status label, and the mic readout).
+
+### 21.2 The Indian female voice
+
+NOVA's default provider is **edge-tts** with Microsoft's neural Indian female
+voices (free, high quality, needs internet):
+
+| Language used by the user | Voice picked |
+|---|---|
+| English | `en-IN-NeerjaNeural` (Indian English, F) |
+| Hindi (Devanagari) | `hi-IN-SwaraNeural` (Hindi, F — bilingual) |
+| Hinglish (Romanised) | `hi-IN-SwaraNeural` — she naturally blends Hindi + English |
+
+- `voice/language.py` auto-detects the user's language: Devanagari script →
+  Hindi; a Romanised-Hindi lexicon → Hinglish; otherwise English.
+- `VoiceController` (`voice/controller.py`) applies the chosen
+  `VOICE_LANGUAGE` mode, volume and speed live, and routes
+  responses/speech accordingly.
+- **Offline fallback:** `VOICE_PROVIDER = windows-sapi` uses the installed
+  Windows SAPI voices (`VOICE_SAPI_NAME` to pick one).
+- **Language-aware replies:** after a *verified successful* action NOVA
+  answers with a natural prefix in the user's language
+  (“Sure, …” / “ज़रूर, …”). Refusals, confirmations and errors keep their
+  neutral, safe phrasing.
+- Editable live in **SETTINGS ⚙ → VOICE**: master switch, volume, speed,
+  provider, language mode, and auto-detect — with a **TEST VOICE** button.
+  Changes persist to `.env` through `write_env`.
+
+### 21.3 Voice provider architecture
+
+```
+voice/language.py           detect_lang(), effective_language() (AUTO/EN/HI/HINGLISH)
+voice/controller.py         VoiceController: settings + async speak + persistence
+voice/providers/
+    __init__.py             VoiceProvider (abstract contract)
+    edge.py                 EdgeVoiceProvider  (+ NullVoiceProvider)
+    sapi.py                 WindowsSAPIVoiceProvider (offline)
+```
+
+Every provider implements the same contract (`speak(text, lang)`,
+`apply(volume, speed)`, `stop()`, `voices()`, `describe()`), so the UI, brain
+and listener stay provider-agnostic. Speech always runs on a worker thread —
+the UI never blocks.
+
+### 21.4 New Phase-3 dependencies
+
+- `edge-tts` — neural TTS synthesis (speaker voices above)
+- `pygame` — MP3 playback of synthesized audio
+- (optional) `pyttsx3` + `pywin32` — offline SAPI provider
+
+### 21.5 Testing
+
+- `python -X utf8 -m unittest discover -s tests` → **48 tests** (safety,
+  automation files, brain intents incl. language-aware replies, language
+  detection, voice-provider mapping — no audio/network calls).
+- `python -u -X utf8 <smoke_main_window.py>` → end-to-end offscreen smoke:
+  real `MainWindow` → `NovaAgent` → mocked tools, all seven character states,
+  the success flash pipeline, and an avatar frame rendered to a PNG.
+
+### 21.6 Roadmap update
+
+- **Phase 1** — Core assistant + voice controls: ✅ (§1–§19)
+- **Phase 2** — Secure risk-gated Windows automation: ✅ (§20)
+- **Phase 3** — Procedural anime character + Indian female voice identity: ✅ (§21)
+- **Next** — Live2D/3D model rigging, deeper facial emotion from voice/context,
+  on-device voice emotion, longer agentic multi-step memory, vision, and
+  browser automation.
+
+---
+
+**NOVA** — Phase 1 core voice + Aurora Core UI shipped; Phase 2 adds a secure, risk-gated Windows automation layer with verified execution; Phase 3 puts an original anime girl at the heart of the UI with a natural Indian female voice that follows your language.

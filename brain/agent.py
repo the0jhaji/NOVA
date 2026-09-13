@@ -19,6 +19,7 @@ from utils.logger import log
 from automation import AutomationEngine, ActionStep, ActionPlan, RiskLevel
 from automation.safety import classify, classify_text_high_risk, classify_step
 from automation.paths import resolve_location, default_folder
+from voice.language import detect_lang
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +307,7 @@ class NovaAgent:
 
         text = user_input.strip()
         log.info("Brain processing: %s", text)
+        self.last_user_lang = detect_lang(text)
         self.conversation_history.append({
             "role": "user", "text": text,
             "timestamp": datetime.now().isoformat(),
@@ -346,6 +348,16 @@ class NovaAgent:
                  f" for: {text}" if text else "")
 
     def _finish_and_return(self, result: Tuple[str, str], text: str) -> Tuple[str, str]:
+        # Natural success prefix in the user's language (only after a
+        # verified, successfully executed action).
+        response, action = result
+        if action == "execute" and self.last_action_ok:
+            lang = getattr(self, "last_user_lang", "en")
+            if lang == "hi":
+                response = f"ज़रूर, {response}"
+            elif lang == "hinglish":
+                response = f"Sure, {response}"
+            result = (response, action)
         self._log_response(result[0], result[1], text)
         return result
 

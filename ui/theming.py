@@ -94,6 +94,17 @@ STATE_DEFS = {
         "orb_text": "",
         "mode": "execute",
     },
+    "SUCCESS": {
+        "primary":  (52, 211, 153),   # emerald - task finished
+        "secondary": (16, 185, 129),
+        "base_pulse": 1.08,
+        "pulse_amp": 0.10,
+        "pulse_speed": 120.0,
+        "rotation": 30.0,
+        "ring_speed": 16.0,
+        "orb_text": "",
+        "mode": "success",
+    },
     "ERROR": {
         "primary":  (248, 113, 113),
         "secondary": (220, 38, 38),

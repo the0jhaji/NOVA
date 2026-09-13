@@ -27,6 +27,33 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return default
 
 
+def write_env(key: str, value: str) -> None:
+    """
+    Persist a key/value pair into .env, preserving every other line.
+    Called by the voice settings UI so choices survive a restart.
+    """
+    path = _env_path
+    lines = []
+    found = False
+    if path.exists():
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except Exception:
+            raw = ""
+        for ln in raw.splitlines():
+            if ln.strip().startswith(f"{key}="):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(ln)
+    if not found:
+        lines.append(f"{key}={value}")
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class STTConfig:
     provider: str = field(default_factory=lambda: _env("STT_PROVIDER", "google"))
@@ -46,6 +73,37 @@ class TTSConfig:
 class WakeWordConfig:
     enabled: bool = field(default_factory=lambda: _env_bool("WAKE_WORD_ENABLED", False))
     word: str = field(default_factory=lambda: _env("WAKE_WORD", "nova"))
+
+
+@dataclass(frozen=True)
+class VoiceConfig:
+    """
+    NOVA's spoken identity.
+
+    - provider:          edge-tts (natural neural voices, incl. Indian) or
+                         windows-sapi (offline fallback).
+    - voice:             default voice name (edge voices like en-IN-NeerjaNeural).
+    - language_mode:     AUTO | ENGLISH | HINDI | HINGLISH — bias for the
+                         response + TTS voice selection.
+    - enabled:           master voice switch (disables speech playback).
+    - auto_language_detect: follow the user's language (AUTO mode) vs a
+                         fixed mode.
+    - volume:            0..100 speech volume.
+    - speed:             -50..+50 speaking rate shift.
+    - sapi_name:         optional SAPI voice name to prefer on Windows.
+    Legacy variables TTS_PROVIDER / TTS_VOICE / TTS_RATE / TTS_VOLUME are
+    still honoured when the VOICE_* equivalents are absent.
+    """
+    provider: str = field(default_factory=lambda: _env("VOICE_PROVIDER", _env("TTS_PROVIDER", "edge-tts")))
+    voice: str = field(default_factory=lambda: _env("VOICE_NAME", _env("TTS_VOICE", "en-IN-NeerjaNeural")))
+    rate: str = field(default_factory=lambda: _env("TTS_RATE", "+0%"))
+    volume_str: str = field(default_factory=lambda: _env("TTS_VOLUME", "+0%"))
+    language_mode: str = field(default_factory=lambda: _env("VOICE_LANGUAGE", "AUTO").upper())
+    enabled: bool = field(default_factory=lambda: _env_bool("VOICE_ENABLED", True))
+    auto_language_detect: bool = field(default_factory=lambda: _env_bool("VOICE_AUTO_LANGUAGE", True))
+    volume: int = field(default_factory=lambda: int(_env("VOICE_VOLUME", "100")))
+    speed: int = field(default_factory=lambda: int(_env("VOICE_SPEED", "0")))
+    sapi_name: str = field(default_factory=lambda: _env("VOICE_SAPI_NAME", ""))
 
 
 @dataclass(frozen=True)
@@ -74,11 +132,12 @@ class AutomationConfig:
 class NovaConfig:
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", False))
     app_name: str = "NOVA"
-    app_version: str = "0.2.0"
+    app_version: str = "0.3.0"
 
 
 # Singleton config instance
