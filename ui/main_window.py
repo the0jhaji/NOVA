@@ -1,36 +1,47 @@
 """
 NOVA Voice Assistant - Main Window
-The main desktop command center UI.
-Wires together the orb, waveform, voice pipeline, and brain.
+NOVA's command center: dark atmospheric UI with a central animated core,
+numeric system readouts, live transcript, and full voice interaction.
 
-Threading model:
-- Voice listener: background thread (captures audio, transcribes)
+Threading model (unchanged from v1 — voice architecture is untouched):
+- Voice listener: background thread (captures + transcribes audio)
 - Command processing: background thread (brain + simulated execution)
-- TTS: background thread (speech synthesis + playback)
-- UI: main thread only (updated via bridge signals)
+- TTS: background thread (synthesis + playback)
+- UI: main thread only, updated through VoiceBridge signals.
+
+Visual additions in this version:
+- Shared NovaStateAnimator drives orb/rings/waveform/status in sync.
+- Task progress + success/failure feedback chips.
+- Inline text-input fallback (no modal dialog).
 """
 
 import threading
 import time
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QTextBrowser, QGraphicsDropShadowEffect, QInputDialog,
+    QFrame, QTextBrowser, QLineEdit, QGraphicsDropShadowEffect,
 )
 
 from config import config
 from utils.logger import log
-from ui.nova_orb import NovaOrb, STATE_COLORS
+from ui.theming import PALETTE, STATE_DEFS
+from ui.state_engine import NovaStateAnimator
+from ui.ambient import AmbientBackground
+from ui.ring_field import EnergyRings
+from ui.nova_orb import NovaOrb
 from ui.waveform import WaveformWidget
+from ui.glass import GlassPanel, SectionTitle, FlashChip
 from ui.styles.theme import QSS as THEME_QSS
+from ui.settings_dialog import SettingsDialog
 from voice.listener import Listener
 from voice.text_to_speech import create_tts_provider
 from brain.agent import NovaAgent
 
-# Map text keywords to simulated app opens
+# Map text keywords to simulated app opens (Phase 2 replaces with real actions)
 EXECUTE_APP_MAP = {
     "chrome": "Chrome",
     "notepad": "Notepad",
@@ -39,21 +50,65 @@ EXECUTE_APP_MAP = {
     "browser": "your default browser",
 }
 
+STATE_LABELS = {
+    "IDLE": "READY",
+    "LISTENING": "LISTENING",
+    "PROCESSING": "THINKING",
+    "SPEAKING": "SPEAKING",
+    "EXECUTING": "EXECUTING",
+    "ERROR": "ERROR",
+}
+STATE_CAPTIONS = {
+    "IDLE": "Ready for your command",
+    "LISTENING": "Listening — speak now",
+    "PROCESSING": "Processing your request",
+    "SPEAKING": "Speaking response",
+    "EXECUTING": "Executing task",
+    "ERROR": "Something went wrong",
+}
+
 
 class VoiceBridge(QObject):
-    """
-    Cross-thread signal bridge.
-    Worker threads must NOT touch UI widgets directly; they emit signals
-    which are queued and handled on the main (UI) thread.
-    """
+    """Cross-thread signal bridge. Workers never touch UI widgets directly."""
 
     state_changed = pyqtSignal(str)
     text_captured = pyqtSignal(str)          # user speech recognized
     response_ready = pyqtSignal(str)         # NOVA reply text
     action_triggered = pyqtSignal(str)       # action type + detail
+    task_progress = pyqtSignal(float)        # 0..1 execution progress
     error_occurred = pyqtSignal(str)
     audio_level = pyqtSignal(float)
+    latency_updated = pyqtSignal(float)
     shutdown_requested = pyqtSignal()
+
+
+class _Root(QWidget):
+    """Central widget that keeps the ambient background filling the window."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ambient = AmbientBackground(self)
+
+    def resizeEvent(self, event):
+        self.ambient.setGeometry(self.rect())
+        super().resizeEvent(event)
+
+
+class _CoreDisplay(QWidget):
+    """Stacked core: energy rings behind + orb centred on top."""
+
+    def __init__(self, animator, parent=None):
+        super().__init__(parent)
+        self.rings = EnergyRings(animator, self)
+        self.orb = NovaOrb(animator, self, size=232)
+        self._animator = animator
+
+    def resizeEvent(self, event):
+        self.rings.setGeometry(self.rect())
+        ox = max((self.width() - self.orb.width()) // 2, 0)
+        oy = max((self.height() - self.orb.height()) // 2, 0)
+        self.orb.move(ox, oy)
+        super().resizeEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -65,14 +120,16 @@ class MainWindow(QMainWindow):
 
         self._drag_offset: Optional[tuple[int, int]] = None
         self._is_closing = False
+        self._latest_response: str = ""
 
-        # Core components
+        # Core components (identical voice architecture)
         self.brain = NovaAgent()
         self.tts = create_tts_provider()
         self.bridge = VoiceBridge()
         self.listener = Listener()
 
-        self._latest_response: str = ""
+        # Shared visual clock
+        self.animator = NovaStateAnimator(self)
 
         self._build_ui()
         self._wire_signals()
@@ -80,264 +137,230 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(1500, self._startup_message)
 
-    # ------------------------------------------------------------------
-    # UI Construction
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ UI
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
+        self._root = _Root()
+        self.setCentralWidget(self._root)
 
-        outer = QVBoxLayout(central)
-        outer.setContentsMargins(12, 12, 12, 12)
+        outer = QVBoxLayout(self._root)
+        outer.setContentsMargins(22, 18, 22, 22)
         outer.setSpacing(0)
 
-        self.panel = QFrame()
-        self.panel.setObjectName("main_panel")
-        self.panel.setStyleSheet("""
-            QFrame#main_panel {
-                background-color: rgba(14, 18, 32, 0.92);
-                border: 1px solid rgba(0, 180, 216, 0.15);
-                border-radius: 18px;
-            }
-        """)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(48)
-        shadow.setColor(QColor(0, 180, 216, 28))
-        shadow.setOffset(0, 0)
-        self.panel.setGraphicsEffect(shadow)
-
-        panel_layout = QVBoxLayout(self.panel)
-        panel_layout.setContentsMargins(24, 10, 24, 20)
-        panel_layout.setSpacing(0)
-
-        panel_layout.addLayout(self._build_titlebar())
-        panel_layout.addSpacing(4)
-
-        top = QHBoxLayout()
-        top.setSpacing(24)
-        top.addLayout(self._build_system_panel(), 1)
-        top.addLayout(self._build_orb_column(), 2)
-        top.addLayout(self._build_chat_panel(), 1)
-        panel_layout.addLayout(top)
-        panel_layout.addSpacing(14)
-
-        panel_layout.addLayout(self._build_state_bar())
-        panel_layout.addSpacing(6)
-        panel_layout.addLayout(self._build_controls())
-
-        central.setLayout(outer)
-        outer.addWidget(self.panel)
-
-        self.setFixedSize(1000, 640)
-
-    def _build_titlebar(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setContentsMargins(4, 0, 0, 0)
-
+        # ---- Title bar ----
+        tb = QHBoxLayout()
         brand = QHBoxLayout()
-        brand.setSpacing(10)
+        brand.setSpacing(12)
 
-        title = QLabel("N O V A")
-        title.setStyleSheet("""
-            color: #e8f6ff;
-            font-size: 16px;
-            font-weight: 700;
-            letter-spacing: 4px;
-        """)
-        brand.addWidget(title)
+        word = QLabel("N O V A")
+        word.setObjectName("wordmark")
+        brand.addWidget(word)
 
-        self.connection_dot = QLabel("●")
-        self.connection_dot.setStyleSheet("color: #00ff88; font-size: 10px;")
-        brand.addWidget(self.connection_dot)
+        dot = QLabel("●")
+        dot.setStyleSheet("color: #00E9CB; font-size: 9px;")
+        brand.addWidget(dot)
 
-        self.status_label = QLabel("SYSTEM ONLINE")
-        self.status_label.setStyleSheet("color: #4ad0af; font-size: 10px; letter-spacing: 1px;")
-        brand.addWidget(self.status_label)
+        tag = QLabel("AURORA MIND")
+        tag.setObjectName("tagline")
+        brand.addWidget(tag)
 
         brand.addStretch()
-        row.addLayout(brand)
+        tb.addLayout(brand)
 
-        controls = QHBoxLayout()
-        controls.setSpacing(6)
-
-        self.settings_btn = QPushButton("⚙")
+        self.settings_btn = QPushButton("⚙  SETTINGS")
         self.settings_btn.setObjectName("settings_button")
-        self.settings_btn.setToolTip("NOVA Settings")
         self.settings_btn.clicked.connect(self._open_settings)
-        controls.addWidget(self.settings_btn)
+        tb.addWidget(self.settings_btn)
 
         min_btn = QPushButton("—")
         min_btn.setObjectName("title_min")
         min_btn.clicked.connect(self.showMinimized)
-        controls.addWidget(min_btn)
+        tb.addWidget(min_btn)
 
         close_btn = QPushButton("✕")
         close_btn.setObjectName("title_close")
         close_btn.clicked.connect(self.close)
-        controls.addWidget(close_btn)
+        tb.addWidget(close_btn)
 
-        row.addLayout(controls)
-        return row
+        outer.addLayout(tb)
+        outer.addSpacing(14)
 
-    def _build_system_panel(self) -> QVBoxLayout:
-        panel = QVBoxLayout()
-        panel.setSpacing(8)
-        panel.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # ---- Main row: transcript | core | system ----
+        main = QHBoxLayout()
+        main.setSpacing(18)
+        main.addWidget(self._build_transcript_panel(), 1)
+        main.addWidget(self._build_core_column(), 2)
+        main.addWidget(self._build_system_panel(), 1)
+        outer.addLayout(main, 1)
+        outer.addSpacing(16)
 
-        sys_title = QLabel("SYSTEM STATUS")
-        sys_title.setObjectName("system_title")
-        panel.addWidget(sys_title)
+        # ---- Bottom dock: mic | text input | (settings above) ----
+        outer.addLayout(self._build_dock())
 
-        separator = QFrame()
-        separator.setObjectName("sys_separator")
-        separator.setFixedHeight(1)
-        separator.setStyleSheet("background-color: rgba(255,255,255,0.07);")
-        panel.addWidget(separator)
-        panel.addSpacing(6)
+        self.setFixedSize(1280, 820)
 
-        sys_items = [
-            ("CORE", "NOVA v0.1"),
-            ("LANG", config.stt.language.upper()),
-            ("STT", config.stt.provider.upper()),
-            ("TTS", config.tts.provider.upper()),
-            ("WAKE", "ON" if config.wake_word.enabled else "OFF"),
-            ("MIC", "READY"),
-        ]
-        self._system_items = {}
-        for key, value in sys_items:
-            r = QHBoxLayout()
-            r.setSpacing(10)
-            key_lbl = QLabel(key)
-            key_lbl.setObjectName("sys_key")
-            key_lbl.setStyleSheet("color: #7d8b9d; font-size: 12px;")
-            val_lbl = QLabel(value)
-            val_lbl.setObjectName("sys_value")
-            val_lbl.setStyleSheet("color: #4dd0ff; font-size: 12px;")
-            self._system_items[key.lower()] = val_lbl
-            r.addWidget(key_lbl)
-            r.addStretch()
-            r.addWidget(val_lbl)
-            panel.addLayout(r)
+    def _build_transcript_panel(self) -> QWidget:
+        panel = GlassPanel(object_name="glass_panel")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
 
-        panel.addSpacing(14)
-
-        hint = QLabel(
-            "NOVA is an adaptive AI companion.\n\n"
-            "Speak in English, Hindi or Hinglish.\n"
-            "Example: \"NOVA, YouTube kholo\""
-        )
-        hint.setObjectName("idle_hint")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(
-            "QLabel#idle_hint { color: #5a6b7a; font-size: 11px; line-height: 1.6; }"
-        )
-        panel.addWidget(hint)
-
-        panel.addStretch()
-        return panel
-
-    def _build_orb_column(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(4)
-        col.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.orb = NovaOrb(size=250)
-        col.addWidget(self.orb, 0, Qt.AlignmentFlag.AlignCenter)
-
-        self.waveform = WaveformWidget(width=460, height=50)
-        self.waveform.setFixedWidth(460)
-        col.addWidget(self.waveform, 0, Qt.AlignmentFlag.AlignCenter)
-
-        return col
-
-    def _build_chat_panel(self) -> QVBoxLayout:
-        panel = QVBoxLayout()
-        panel.setSpacing(8)
-
-        chat_title = QLabel("COMMAND FEED")
-        chat_title.setObjectName("conversation_title")
-        chat_title.setStyleSheet("color: #7d8b9d; font-size: 11px; font-weight: 600;")
-        panel.addWidget(chat_title)
+        lay.addWidget(SectionTitle("TRANSCRIPT"))
 
         self.history = QTextBrowser()
         self.history.setObjectName("history_browser")
-        self.history.setStyleSheet("""
-            QTextBrowser {
-                background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.07);
-                border-radius: 10px;
-                color: #c8d8e8;
-                padding: 10px;
-                font-size: 12px;
-            }
-        """)
-        self.history.setFixedWidth(270)
-        panel.addWidget(self.history)
+        self.history.document().setDefaultStyleSheet("")
+        lay.addWidget(self.history, 1)
 
-        self.command_label = QLabel("Awaiting command...")
-        self.command_label.setObjectName("command_label")
+        sepf = QFrame()
+        sepf.setFixedHeight(1)
+        sepf.setStyleSheet("background-color: rgba(255,255,255,0.06);")
+        lay.addWidget(sepf)
+
+        task_title = QLabel("CURRENT TASK")
+        task_title.setObjectName("section_title")
+        lay.addWidget(task_title)
+
+        self.command_label = QLabel("Awaiting command…")
         self.command_label.setWordWrap(True)
-        self.command_label.setStyleSheet("""
-            QLabel#command_label {
-                color: #a8f0ff;
-                font-size: 12px;
-                padding: 2px 0;
-            }
-        """)
-        panel.addWidget(self.command_label)
+        self.command_label.setStyleSheet(
+            f"color: {PALETTE['accent']}; font-size: 12px;"
+        )
+        lay.addWidget(self.command_label)
 
-        self.response_label = QLabel("")
-        self.response_label.setObjectName("response_label")
-        self.response_label.setWordWrap(True)
-        self.response_label.setStyleSheet("""
-            QLabel#response_label {
-                color: #d0e0f0;
-                font-size: 12px;
-                padding: 2px 0;
-            }
-        """)
-        panel.addWidget(self.response_label)
+        self.meta_label = QLabel("—")
+        self.meta_label.setObjectName("task_meta")
+        self.meta_label.setWordWrap(True)
+        lay.addWidget(self.meta_label)
 
-        panel.addStretch()
         return panel
 
-    def _build_state_bar(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(12)
+    def _build_core_column(self) -> QWidget:
+        wrapper = QWidget()
+        col = QVBoxLayout(wrapper)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
 
-        self.state_label = QLabel("● IDLE")
+        core = _CoreDisplay(self.animator)
+        core.setFixedSize(520, 340)
+        col.addWidget(core, 1, Qt.AlignmentFlag.AlignHCenter)
+
+        self.waveform = WaveformWidget(self.animator, width=470, height=50)
+        col.addWidget(self.waveform, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.state_label = QLabel("● READY")
         self.state_label.setObjectName("state_label")
         self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row.addWidget(self.state_label, 0, Qt.AlignmentFlag.AlignCenter)
-        return row
+        col.addWidget(self.state_label)
 
-    def _build_controls(self) -> QHBoxLayout:
+        self.state_caption = QLabel(STATE_CAPTIONS["IDLE"])
+        self.state_caption.setObjectName("main_status")
+        self.state_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(self.state_caption)
+
+        self.flash_chip = FlashChip()
+        col.addWidget(self.flash_chip, 0, Qt.AlignmentFlag.AlignCenter)
+
+        return wrapper
+
+    def _build_system_panel(self) -> QWidget:
+        panel = GlassPanel(object_name="glass_panel")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(8)
+
+        lay.addWidget(SectionTitle("SYSTEM"))
+
+        # AI status
+        ai_row = QHBoxLayout()
+        ai_row.setSpacing(8)
+        self.ai_dot = QLabel("●")
+        self.ai_dot.setStyleSheet("color: #00E9CB; font-size: 10px;")
+        ai_row.addWidget(self.ai_dot)
+        self.ai_status = QLabel("AI CORE · ONLINE")
+        self.ai_status.setObjectName("sys_value")
+        self.ai_status.setStyleSheet(
+            f"color: #00E9CB; font-size: 12px; font-weight: 600; letter-spacing: 1px;"
+        )
+        ai_row.addWidget(self.ai_status)
+        ai_row.addStretch()
+        lay.addLayout(ai_row)
+
+        sep = QFrame(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: rgba(255,255,255,0.06);")
+        lay.addWidget(sep)
+
+        # Static rows
+        self.sys_mic = self._add_row(lay, "MIC", "READY")
+        self.sys_lang = self._add_row(lay, "LANGUAGE", config.stt.language.upper())
+        self.sys_stt = self._add_row(lay, "SPEECH→TEXT", config.stt.provider.upper())
+        self.sys_tts = self._add_row(lay, "TEXT→SPEECH", config.tts.provider.upper())
+        self.sys_wake = self._add_row(lay, "WAKE WORD",
+                                     f"{config.wake_word.word.upper()} · "
+                                     f"{'ON' if config.wake_word.enabled else 'OFF'}")
+        self.sys_latency = self._add_row(lay, "LATENCY", "—")
+
+        lay.addSpacing(8)
+        hint = QLabel(
+            "Speak or type in English, हिन्दी or Hinglish.\n"
+            "Examples:  “Chrome kholo” · “क्रोम खोलो”\n"
+            "           “YouTube open karo” · “Tell me the time”"
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("task_meta")
+        lay.addWidget(hint)
+
+        lay.addStretch()
+        return panel
+
+    def _add_row(self, lay, key: str, value: str) -> QLabel:
         row = QHBoxLayout()
-        row.setSpacing(12)
-        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.setSpacing(8)
+        k = QLabel(key)
+        k.setObjectName("sys_key")
+        v = QLabel(value)
+        v.setObjectName("sys_value")
+        row.addWidget(k)
+        row.addStretch()
+        row.addWidget(v)
+        lay.addLayout(row)
+        return v
 
-        self.mic_button = QPushButton("🎤  MICROPHONE")
+    def _build_dock(self) -> QHBoxLayout:
+        dock = QHBoxLayout()
+        dock.setSpacing(12)
+
+        self.mic_button = QPushButton("●  MICROPHONE")
         self.mic_button.setObjectName("mic_button")
+        self.mic_button.setToolTip("Toggle listening (click or focus + Enter)")
         self.mic_button.clicked.connect(self._toggle_mic)
-        row.addWidget(self.mic_button)
+        self.mic_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        dock.addWidget(self.mic_button)
 
-        self.text_button = QPushButton("⌨  TYPE COMMAND")
-        self.text_button.setObjectName("mic_button")
-        self.text_button.clicked.connect(self._handle_text_input)
-        row.addWidget(self.text_button)
+        self.cmd_input = QLineEdit()
+        self.cmd_input.setObjectName("cmd_input")
+        self.cmd_input.setPlaceholderText("Type a command…  ( Enter to send )")
+        self.cmd_input.returnPressed.connect(self._send_text)
+        dock.addWidget(self.cmd_input, 1)
 
-        return row
+        send = QPushButton("SEND")
+        send.setObjectName("send_button")
+        send.clicked.connect(self._send_text)
+        dock.addWidget(send)
 
-    # ------------------------------------------------------------------
-    # Signal wiring & listener init
-    # ------------------------------------------------------------------
+        return dock
+
+    # ------------------------------------------------------------------ wires
     def _wire_signals(self):
         self.bridge.state_changed.connect(self._set_state)
         self.bridge.text_captured.connect(self._on_text_captured)
         self.bridge.response_ready.connect(self._on_response)
         self.bridge.action_triggered.connect(self._on_action)
+        self.bridge.task_progress.connect(self._on_task_progress)
         self.bridge.error_occurred.connect(self._on_error)
-        self.bridge.audio_level.connect(self._on_audio_level)
+        self.bridge.audio_level.connect(self.animator.set_audio_level)
+        self.bridge.latency_updated.connect(
+            lambda ms: self.sys_latency.setText(f"{ms:.0f} ms")
+        )
         self.bridge.shutdown_requested.connect(self.close)
 
     def _init_listener(self):
@@ -348,63 +371,70 @@ class MainWindow(QMainWindow):
 
         ok = self.listener.initialize()
         if ok:
-            import threading
             threading.Thread(target=self.listener.calibrate, daemon=True).start()
             log.info("Microphone ready")
         else:
             self._set_connection(False)
-            self._append_history("SYSTEM", "No microphone detected — use TYPE COMMAND.")
+            self._append_history("SYSTEM", "No microphone detected — type or use Send.")
 
-    # ------------------------------------------------------------------
-    # State management
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ states
     def _startup_message(self):
-        self._set_state("IDLE")
-        self._append_history(
-            "NOVA",
-            "SYSTEMS ONLINE. State your command, or use the microphone."
-        )
+        self._append_history("NOVA", "SYSTEMS ONLINE. I'm ready — speak or type a command.")
 
     def _set_state(self, state: str):
-        self.orb.state = state
-        self.waveform.state = state
-        self.state_label.setText(f"● {state}")
+        self.animator.set_state(state)
+        self.state_label.setText(f"● {STATE_LABELS.get(state, state)}")
+        self.state_caption.setText(STATE_CAPTIONS.get(state, ""))
 
-        primary = STATE_COLORS.get(state, STATE_COLORS["IDLE"])[0]
+        primary = STATE_DEFS[state]["primary"]
+        hexc = QColor(*primary).name()
         self.state_label.setStyleSheet(
-            f"QLabel#state_label {{ color: {primary.name()}; font-size: 13px; "
-            f"font-weight: 600; letter-spacing: 2px; }}"
+            f"QLabel#state_label {{ color: {hexc}; font-size: 13px; "
+            f"font-weight: 700; letter-spacing: 2px; }}"
         )
+        self.flash_chip.hide()
 
-        labels = {
+        mic_text = {
             "LISTENING": "◉ LISTENING",
             "PROCESSING": "… THINKING",
             "SPEAKING": "◉ SPEAKING",
             "EXECUTING": "✓ EXECUTING",
             "ERROR": "⚠ ERROR",
             "IDLE": "READY",
-        }
-        self._update_sys_item("mic", labels.get(state, "READY"))
+        }.get(state, "READY")
+        self.sys_mic.setText(mic_text)
 
-    def _on_audio_level(self, level: float):
-        self.orb.set_audio_level(level)
-        self.waveform.set_audio_level(level)
+        # Wake-word ornament clears when NOVA returns to a neutral state
+        if state in ("IDLE", "LISTENING"):
+            self.animator.clear_orb_text()
+
+    def _on_task_progress(self, value: float):
+        self.animator.set_progress(value)
+
+    def _flash(self, text: str, kind: str):
+        color = {
+            "success": PALETTE["success"],
+            "error": PALETTE["danger"],
+            "notice": PALETTE["warning"],
+        }.get(kind, PALETTE["accent"])
+        hexc = QColor(*color).name()
+        self.flash_chip.flash(text, hexc)
+        QTimer.singleShot(3200, self.flash_chip.hide)
 
     def _on_error(self, message: str):
         log.error("Voice pipeline error: %s", message)
         self._set_state("ERROR")
-        self._append_history("NOVA", "I had trouble hearing you. Try again?")
+        self._flash("⚠ Action did not complete", "error")
+        self._append_history("NOVA", "I had trouble with that. Could you try again?")
         QTimer.singleShot(2500, lambda: self._set_state("IDLE"))
 
-    # ------------------------------------------------------------------
-    # Command handling
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ commands
     def _on_text_captured(self, text: str):
-        """Voice/captured text arrives on the UI thread."""
-        # Wake-word only response
+        """Voice text arrives on the UI thread (wake word or command)."""
         if text.strip().lower() == config.wake_word.word.lower():
             self.command_label.setText(f"Wake: {text}")
             self._set_state("SPEAKING")
+            self.animator.set_orb_text("YES?")
             reply = "Yes?"
             threading.Thread(
                 target=self._speak_worker, args=(reply,), daemon=True
@@ -415,30 +445,41 @@ class MainWindow(QMainWindow):
         self._append_history("YOU", text)
         self.command_label.setText(text)
         self._set_state("PROCESSING")
-
         threading.Thread(
-            target=self._process_worker,
-            args=(text,),
-            daemon=True,
+            target=self._process_worker, args=(text,), daemon=True
         ).start()
 
-    _latest_response: str = ""
+    def _send_text(self):
+        text = self.cmd_input.text().strip()
+        if not text:
+            return
+        self.cmd_input.clear()
+        self._append_history("YOU", text)
+        self.command_label.setText(text)
+        self._set_state("PROCESSING")
+        threading.Thread(
+            target=self._process_worker, args=(text,), daemon=True
+        ).start()
 
     def _process_worker(self, text: str):
-        """Background: run the brain and emit results on the bridge."""
+        """Background: run the brain, report latency, emit results."""
         try:
-            time.sleep(0.35)  # brief perceived "thinking" delay
+            time.sleep(0.30)
+            t0 = time.perf_counter()
             response, action = self.brain.process(text)
+            latency = (time.perf_counter() - t0) * 1000.0
+            self.bridge.state_changed.emit("PROCESSING")
 
             self._latest_response = response
             self.bridge.response_ready.emit(response)
+            self.bridge.latency_updated.emit(latency)
 
             if action == "execute":
                 self.bridge.action_triggered.emit(text)
             elif action == "quit":
                 self.bridge.state_changed.emit("SPEAKING")
                 self._speak_worker(response)
-                QTimer.singleShot(2000, self.bridge.shutdown_requested.emit)
+                self.bridge.shutdown_requested.emit()
             else:
                 self.bridge.state_changed.emit("SPEAKING")
                 self._speak_worker(response)
@@ -448,10 +489,14 @@ class MainWindow(QMainWindow):
             self.bridge.error_occurred.emit(str(e))
 
     def _on_response(self, text: str):
-        self.response_label.setText(text)
+        self.meta_label.setText("RESPONSE")
+        self.meta_label.setStyleSheet(
+            "QLabel#task_meta { color: #9FB4CE; font-size: 10.5px; }"
+        )
+        self._append_history("NOVA", text)
 
     def _on_action(self, command: str):
-        """Simulated execution indicator (Phase 2 replaces with real automation)."""
+        """Simulated execution (Phase 2 will call real automation here)."""
         text = command.lower()
         app = None
         for key in EXECUTE_APP_MAP:
@@ -460,11 +505,16 @@ class MainWindow(QMainWindow):
                 break
 
         self._set_state("EXECUTING")
+        self.command_label.setText(command)
+        self.meta_label.setText("EXECUTING…")
+        self.meta_label.setStyleSheet(
+            "QLabel#task_meta { color: #FBBF24; font-size: 10.5px; }"
+        )
         if app:
             log.info("SIMULATED ACTION: opening %s", app)
             self._append_history(
                 "SYSTEM",
-                f"[SIMULATED] Opening {app} — real automation in Phase 2",
+                f"[SIMULATED] Opening {app} — real automation ships in Phase 2",
             )
         else:
             self._append_history("SYSTEM", "[SIMULATED] Executing action")
@@ -474,18 +524,19 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _execute_pipeline(self, app: Optional[str]):
-        """Background: show EXECUTING briefly, then speak and idle."""
-        time.sleep(0.9)
+        """Background: animate progress, then speak the reply and flash success."""
+        steps = 16
+        for i in range(1, steps + 1):
+            self.bridge.task_progress.emit(i / steps)
+            time.sleep(0.045)
+
         self.bridge.state_changed.emit("SPEAKING")
-        reply = self._latest_response or (
-            f"Opening {app}." if app else "Done."
-        )
+        reply = self._latest_response or (f"Opening {app}." if app else "Done.")
         self._speak_worker(reply)
         self.bridge.state_changed.emit("IDLE")
+        self.bridge.task_progress.emit(0.0)
+        self._flash(f"✓ Task complete — {app if app else 'request finished'}", "success")
 
-    # ------------------------------------------------------------------
-    # TTS
-    # ------------------------------------------------------------------
     def _speak_worker(self, text: str):
         try:
             self.tts.speak(text)
@@ -493,9 +544,7 @@ class MainWindow(QMainWindow):
             log.error("TTS failed: %s", e)
             self.bridge.error_occurred.emit(str(e))
 
-    # ------------------------------------------------------------------
-    # Input controls
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ controls
     def _toggle_mic(self):
         if self.listener.listening:
             self.listener.stop()
@@ -508,64 +557,44 @@ class MainWindow(QMainWindow):
         self.mic_button.style().unpolish(self.mic_button)
         self.mic_button.style().polish(self.mic_button)
 
-    def _handle_text_input(self):
-        text, ok = QInputDialog.getText(
-            self, "NOVA Command", "Enter a command:", text="Hello NOVA"
-        )
-        if ok and text.strip():
-            self._append_history("YOU", text)
-            self.command_label.setText(text.strip())
-            self._set_state("PROCESSING")
-            threading.Thread(
-                target=self._process_worker, args=(text.strip(),), daemon=True
-            ).start()
-
     def _open_settings(self):
-        self._append_history(
-            "SYSTEM", "Settings panel coming in a later phase. Edit .env to configure NOVA."
-        )
+        dlg = SettingsDialog(self)
+        dlg.exec()
 
-    # ------------------------------------------------------------------
-    # UI helpers
-    # ------------------------------------------------------------------
-    def _update_sys_item(self, key: str, value: str):
-        lbl = self._system_items.get(key)
-        if lbl:
-            lbl.setText(value)
-
+    # ------------------------------------------------------------------ helpers
     def _set_connection(self, online: bool):
         if online:
-            self.connection_dot.setStyleSheet("color: #00ff88; font-size: 10px;")
-            self.status_label.setText("SYSTEM ONLINE")
-            self.status_label.setStyleSheet("color: #4ad0af; font-size: 10px;")
+            self.ai_dot.setStyleSheet("color: #00E9CB; font-size: 10px;")
+            self.ai_status.setText("AI CORE · ONLINE")
         else:
-            self.connection_dot.setStyleSheet("color: #ff5252; font-size: 10px;")
-            self.status_label.setText("CONNECTION LOST")
-            self.status_label.setStyleSheet("color: #ff5252; font-size: 10px;")
+            self.ai_dot.setStyleSheet("color: #f87171; font-size: 10px;")
+            self.ai_status.setText("AI CORE · OFFLINE")
 
     def _append_history(self, speaker: str, text: str):
         if speaker == "YOU":
             entry = (
-                f'<span style="color:#7fd8ff;">▸ YOU</span> &nbsp;'
-                f'<b style="color:#e8f6ff;">{text}</b>'
+                f'<span style="color:#7DD7FF;">▸ YOU</span> &nbsp;'
+                f'<b style="color:#EAF4FF;">{text}</b>'
             )
         elif speaker == "SYSTEM":
             entry = (
-                f'<span style="color:#ffc107;">⚡ SYSTEM</span> &nbsp;'
-                f'<span style="color:#b0bec5;">{text}</span>'
+                f'<span style="color:#FBBF24;">⚡ SYSTEM</span> &nbsp;'
+                f'<span style="color:#9FB4CE;">{text}</span>'
             )
         else:
             entry = (
-                f'<span style="color:#ff6b9d;">◉ NOVA</span> &nbsp;'
-                f'<b style="color:#a8f0ff;">{text}</b>'
+                f'<span style="color:#FF7188;">◉ NOVA</span> &nbsp;'
+                f'<b style="color:#A8F0FF;">{text}</b>'
             )
         self.history.append(entry)
-        scrollbar = self.history.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        sb = self.history.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
-    # ------------------------------------------------------------------
-    # Window behavior
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------ window
+    def resizeEvent(self, event):
+        self._root.ambient.setGeometry(self._root.rect())
+        super().resizeEvent(event)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = (

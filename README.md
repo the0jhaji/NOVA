@@ -263,7 +263,7 @@ Key decisions:
 
 | Phase | Scope |
 |---|---|
-| **Phase 1 — UI + Voice Foundation** ✅ | This release: premium UI, voice pipeline, multilingual intents, simulated actions, wake-word architecture |
+| **Phase 1 — UI + Voice Foundation** ✅ | This release: **Aurora Core** premium UI (Visual v2), voice pipeline, multilingual intents, simulated actions, wake-word architecture |
 | **Phase 2 — Windows Automation** | Real app launching, window control, settings, file ops, clipboard (in `automation/`) |
 | **Phase 3 — Browser Automation** | Open/search/navigate pages; drive Chrome/Edge programmatically |
 | **Phase 4 — Screen Vision** | Screenshot + OCR/vision models for "what's on my screen?" |
@@ -316,7 +316,98 @@ Guidelines:
   (info-level, Unicode-safe).
 - Run `py_compile` after any change before committing.
 
+## 18. Aurora Core UI — Visual v2 (Phase 1 Upgrade)
+
+The Phase-1 UI was rebuilt into a premium, futuristic deep-space command center.
+The voice architecture (bridge, threads, providers, brain) is untouched; the
+upgrade is a visual layer that reads the same states through a shared clock.
+
+### Design identity
+
+- **Name:** *Aurora Core* — a glass control deck around a living energy core.
+- **Scene:** deep navy-to-black vertical gradient with drifting aurora glows and
+  a twinkling star field (the `AmbientBackground` behind everything).
+- **Core:** the NOVA orb — a conical-gradient energy sphere with a rotating halo
+  ring, orbiting particles, task-progress arc, and text-in-orb label.
+- **Surround:** three concentric energy rings (`EnergyRings`) with a dashed
+  outer ring, segmented breathing arcs, glow tips, and orbit dots.
+- **Live input:** a mirrored spectrum waveform that reacts to mic energy, speech
+  envelope, and idle drift.
+- **Surfaces:** frosted-glass side panels (`GlassPanel`), success/fail flash
+  chips, and progress-driven flashes for simulated actions.
+
+### Visual components
+
+| File | Widget | Role |
+|---|---|---|
+| `ui/ambient.py` | `AmbientBackground` | Full-window atmosphere: cached gradient + 3 aurora glows + 90 twinkling stars (single 35 ms coarse timer) |
+| `ui/ring_field.py` | `EnergyRings` | Concentric rings, breathing segmented arcs, orbit dots |
+| `ui/nova_orb.py` | `NovaOrb` | Core orb: conical glow, halo, particles, progress arc, text label |
+| `ui/waveform.py` | `WaveformWidget` | Mirrored spectrum, audio / speech / idle modes |
+| `ui/glass.py` | `GlassPanel` | Frosted panel + section titles + status rows + flash chips |
+| `ui/settings_dialog.py` | `SettingsDialog` | Glass config dialog (STT/TTS/wake/language/docs) |
+| `ui/theming.py` | palettes | `PALETTE`, `STATE_DEFS`, `STATE_COLORS`, lerp helpers |
+| `ui/state_engine.py` | `NovaStateAnimator` | Single 30 ms clock driving every visual |
+
+### State visuals (Visual v2 palette)
+
+| State | Core color | Accent | Visual |
+|---|---|---|---|
+| **IDLE** | Teal | Sky | Gentle pulse, drifting rings, slow waveform drift |
+| **LISTENING** | Emerald | Mint | Stronger pulse, waveform reacts to real mic energy |
+| **PROCESSING** | Violet | Lavender | Fast core rotation, particle swarm, pulsing rings |
+| **SPEAKING** | Rose | Pink | Rhythmic speech envelope on core + waveform |
+| **EXECUTING** | Amber | Gold | Sustained energized glow + task progress arc |
+| **ERROR** | Red | Crimson | Sputtering core, jitter, red flash chip |
+
+### Animation architecture
+
+- **One clock, many readers.** `NovaStateAnimator` owns a single 30 ms
+  `PreciseTimer`. Each frame it advances shared floats (rotation, ring angle,
+  pulse, audio, speech) and emits `updated`; orb / rings / waveform / status
+  update only when that fires.
+- **Frame-rate independent.** Transitions use exponential damping
+  (`1 - e^(-dt·k)`), so motion smoothness depends on the clock, not the
+  repaint rate.
+- **Simulated voice.** When SPEAKING, a deterministic sine-based envelope drives
+  the orb and waveform in place of real audio.
+- **Task progress.** EXECUTING exposes a `.progress` value (0→1); the orb draws
+  a progress arc and the shape sustains an energized glow.
+
+### Performance notes
+
+- Base background gradient and the orb's inner artwork are cached to `QPixmap`
+  on resize, never rebuilt per frame.
+- The scene runs two timers (animator 30 ms, ambient 35 ms); widgets repaint
+  only on `updated`, and glow-heavy paint paths are kept cheap.
+- Cross-thread rules are unchanged: workers only emit `VoiceBridge` signals;
+  no worker ever touches a widget. New signals added: `task_progress` and
+  `latency_updated`.
+
+### Platform note (Windows + offscreen)
+
+The raster path on the `offscreen` QPA platform crashed for
+`drawEllipse(x, y, w, h)` float-rect calls with gradient brushes. All ellipse
+drawing therefore uses the `QPointF(center), rx, ry` overload, which is
+reliable on both `offscreen` and `windows`. Keep new drawing code on this form.
+
+## 19. Voice ✕ UI Data Flow (v2)
+
+```
+listener (thread) ──► bridge.text_captured ──► main_window ──► brain (worker)
+                                                      │              │
+   mic level ──► bridge.audio_level ──► animator.set_audio_level()      │
+                                                      │              │
+speech_processing ──► animator.set_state(PROCESSING)  │◄── response_ready
+   task dispatch  ──► bridge.task_progress ──► animator.set_progress()
+   TTS speak      ──► bridge.state_changed(SPEAKING) ◄── animator text
+                                                      │
+                          bridge.latency_updated ──► sys_latency label
+```
+
+Wake-word architecture, provider factories, and the multilingual brain are
+described in §11–§13 and are unchanged by the visual upgrade.
+
 ---
 
-**NOVA** — Phase 1 complete. The foundation is ready for automation, agentic
-tasks, vision, and memory.
+**NOVA** — Phase 1 complete, Aurora Core UI upgrade (Visual v2) shipped. The foundation is ready for automation, agentic tasks, vision, and memory.

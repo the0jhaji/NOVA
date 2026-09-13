@@ -30,6 +30,16 @@ def main():
              config.wake_word.word if config.wake_word.enabled else "OFF")
 
     window = MainWindow()
+
+    # Center on primary screen
+    screen = app.primaryScreen()
+    if screen:
+        geo = screen.availableGeometry()
+        window.move(
+            geo.x() + (geo.width() - window.width()) // 2,
+            geo.y() + (geo.height() - window.height()) // 2,
+        )
+
     window.show()
 
     return app.exec()

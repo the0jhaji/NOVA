@@ -1,111 +1,99 @@
 """
-NOVA Voice Assistant - Waveform Visualization
-Dynamic audio-reactive waveform displayed below the orb.
+NOVA Voice Assistant - Waveform
+Mirrored spectrum bars below the orb.
+Reacts to microphone level (LISTENING), a simulated speech envelope
+(SPEAKING), computing pulses (PROCESSING), task energy (EXECUTING)
+and stays calm elsewhere. Colors follow the shared animator.
 """
 
 import math
-import random
 
-from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QPen, QColor, QBrush
+from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QLinearGradient
 from PyQt6.QtWidgets import QWidget
-
-from ui.nova_orb import STATE_COLORS
 
 
 class WaveformWidget(QWidget):
-    """
-    Animated waveform visualization.
-    
-    Renders bars or a smooth wave that reacts to audio input
-    and changes color based on NOVA's current state.
-    """
-
-    def __init__(self, parent=None, width: int = 400, height: int = 60):
+    def __init__(self, animator, parent=None, width: int = 470, height: int = 52):
         super().__init__(parent)
-        self.setFixedHeight(height)
-        self.setMinimumWidth(width)
+        self.setFixedSize(width, height)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.animator = animator
+        animator.updated.connect(self.update)
 
-        self._state = "IDLE"
-        self._audio_level = 0.0
-        self._bars: list[float] = []
-        self._bar_count = 40
-        self._time = 0.0
-
-        # Initialize bar heights
-        for i in range(self._bar_count):
-            self._bars.append(random.uniform(0.1, 0.3))
-
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._animate)
-        self._timer.start(33)  # ~30fps
+        # Mirrored bar count (half, mirrored across center)
+        self._bars = 26
+        # Smoothed per-bar values for organic motion
+        self._levels = [0.12] * self._bars
 
     @property
     def state(self) -> str:
-        return self._state
+        return self.animator.state
 
     @state.setter
     def state(self, new_state: str):
-        self._state = new_state
+        self.animator.set_state(new_state)
 
     def set_audio_level(self, level: float):
-        self._audio_level = max(0.0, min(1.0, level))
-
-    def _animate(self):
-        self._time += 0.1
-        speed = 0.15 if self._audio_level < 0.1 else 0.05
-
-        for i in range(self._bar_count):
-            if self._state == "IDLE":
-                # Gentle breathing animation
-                target = 0.15 + 0.1 * math.sin(self._time * 0.5 + i * 0.3)
-            elif self._state == "LISTENING":
-                # Responsive to audio level
-                noise = random.uniform(-0.1, 0.1)
-                target = 0.2 + self._audio_level * 0.6 + noise
-                # Add wave pattern
-                target += 0.1 * math.sin(self._time * 2 + i * 0.5)
-            elif self._state == "PROCESSING":
-                # Pulsing wave
-                target = 0.3 + 0.3 * math.sin(self._time * 3 + i * 0.4)
-            elif self._state == "SPEAKING":
-                # Simulated voice waveform
-                target = 0.2 + 0.5 * abs(math.sin(self._time * 4 + i * 0.6))
-                target += random.uniform(-0.1, 0.1)
-            elif self._state == "EXECUTING":
-                target = 0.4 + 0.3 * math.sin(self._time * 2 + i * 0.3)
-            elif self._state == "ERROR":
-                target = 0.1 + 0.15 * abs(math.sin(self._time * 5 + i * 0.8))
-            else:
-                target = 0.15
-
-            # Smooth interpolation
-            self._bars[i] += (target - self._bars[i]) * speed
-
-        self.update()
+        self.animator.set_audio_level(level)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        primary, secondary, _ = STATE_COLORS.get(self._state, STATE_COLORS["IDLE"])
+        a = self.animator
+        mode = a.mode
+        w, h = self.width(), self.height()
+        cx = w / 2
 
-        w = self.width()
-        h = self.height()
-        bar_w = max(w / self._bar_count - 2, 2)
-        gap = (w - bar_w * self._bar_count) / (self._bar_count + 1)
+        # ---- Build envelopes from animator state ----
+        for i in range(self._bars):
+            t = i / self._bars
+            if mode == "listen":
+                target = 0.15 + a.audio_level * 0.55
+                target += 0.06 * math.sin(a.time * 9.0 + i * 0.55) * (1.0 - t)
+            elif mode == "speak":
+                target = 0.18 + a.speech_env * 0.52
+                target += 0.07 * math.sin(a.time * 11.0 + i * 0.7)
+            elif mode == "process":
+                target = 0.30 + 0.34 * abs(math.sin(a.time * 6.0 + i * 0.4))
+            elif mode == "execute":
+                target = 0.34 + 0.26 * math.sin(a.time * 3.5 + i * 0.3)
+            elif mode == "error":
+                target = 0.10 + 0.10 * abs(math.sin(a.time * 14.0 + i * 0.9))
+            else:
+                target = 0.14 + 0.08 * math.sin(a.time * 1.4 + i * 0.35)
+            # taper toward edges
+            target *= 0.72 + 0.28 * math.sin(math.pi * t)
+            self._levels[i] += (target - self._levels[i]) * 0.22
 
-        for i in range(self._bar_count):
-            bar_h = max(self._bars[i] * h * 0.9, 2)
-            x = gap + i * (bar_w + gap)
-            y = (h - bar_h) / 2
+        primary, secondary = a.primary, a.secondary
 
-            # Color gradient per bar
-            t = i / self._bar_count
-            color = QColor(primary)
-            color.setAlpha(180 + int(75 * self._bars[i]))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(color))
-            painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), bar_w / 3, bar_w / 3)
+        step = (w - 30) / (self._bars * 2 - 1)
+        bar_w = max(step * 0.46, 2.0)
+
+        # subtle baseline
+        pen = QPen(QColor(primary.red(), primary.green(), primary.blue(), 36))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawLine(15, h - 3, w - 15, h - 3)
+
+        for i in range(self._bars):
+            level = self._levels[i]
+            bh = max(level * (h - 12), 3.0)
+            for sign in (-1, 1):
+                x = cx + sign * (i * step + step * 0.5)
+                rect = QRectF(x - bar_w / 2, (h - bh) / 2, bar_w, bh)
+                t = i / self._bars
+
+                grad = QLinearGradient(rect.left(), 0, rect.right(), 0)
+                c_top = QColor(primary); c_top.setAlpha(int(180 + 75 * level))
+                c_bot = QColor(secondary); c_bot.setAlpha(int(90 + 45 * level))
+                grad.setColorAt(0.0, c_top if sign > 0 else c_bot)
+                grad.setColorAt(1.0, c_bot if sign > 0 else c_top)
+
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(grad))
+                painter.drawRoundedRect(rect, bar_w / 2, bar_w / 2)
 
         painter.end()

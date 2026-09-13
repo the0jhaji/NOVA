@@ -1,76 +1,44 @@
 """
-NOVA Voice Assistant - Central Orb Widget
-Custom-painted animated orb representing NOVA's core.
-Changes color, pulse speed, and particle effects based on state.
+NOVA Voice Assistant - Central Orb (Aurora Core)
+The animated heart of the interface.
+
+Draws a multi-layered energy core:
+- Soft ambient glow
+- Rotating conic "energy mantle"
+- Radial body (primary -> secondary gradient)
+- Focal bright core
+- Filament arcs that bind the core
+- Expanding burst arcs during PROCESSING
+- Progress arc during EXECUTING
+- Error glyph glitch during ERROR
+
+All motion reads from the shared NovaStateAnimator so every element
+stays in sync and no per-widget timer is needed.
 """
 
 import math
-import random
 
-from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import (
-    QPainter, QPen, QBrush, QColor, QRadialGradient,
-    QConicalGradient, QFont,
+    QPainter, QPen, QBrush, QColor, QRadialGradient, QConicalGradient, QFont,
 )
 from PyQt6.QtWidgets import QWidget
 
-from utils.logger import log
-
-
-# State color themes: (primary, secondary, glow)
-STATE_COLORS = {
-    "IDLE":       (QColor(0, 180, 216), QColor(0, 119, 182),  QColor(0, 180, 216, 40)),
-    "LISTENING":  (QColor(0, 255, 136), QColor(0, 200, 100),  QColor(0, 255, 136, 60)),
-    "PROCESSING": (QColor(167, 99, 236), QColor(124, 58, 237), QColor(167, 99, 236, 60)),
-    "SPEAKING":   (QColor(255, 107, 157), QColor(236, 72, 153), QColor(255, 107, 157, 60)),
-    "EXECUTING":  (QColor(255, 193, 7),   QColor(255, 152, 0),  QColor(255, 193, 7, 60)),
-    "ERROR":      (QColor(255, 82, 82),   QColor(211, 47, 47),  QColor(255, 82, 82, 60)),
-}
-
-# Pulse speed per state (radians per frame)
-STATE_PULSE_SPEED = {
-    "IDLE": 0.02,
-    "LISTENING": 0.05,
-    "PROCESSING": 0.08,
-    "SPEAKING": 0.06,
-    "EXECUTING": 0.07,
-    "ERROR": 0.03,
-}
-
 
 class NovaOrb(QWidget):
-    """
-    Animated central orb widget.
-    
-    Renders a multi-layered glowing orb with:
-    - Outer glow ring
-    - Rotating conical gradient (spinning energy)
-    - Inner radial gradient core
-    - Floating particles
-    - Pulsing animation
-    
-    All visual properties respond to the current state.
-    """
+    """State-and-audio-reactive core orb; only repaints when the animator ticks."""
 
     state_changed = pyqtSignal(str)
 
-    def __init__(self, parent=None, size: int = 200):
+    def __init__(self, animator, parent=None, size: int = 230):
         super().__init__(parent)
         self.setFixedSize(size, size)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.animator = animator
+        animator.updated.connect(self.update)
 
         self._state = "IDLE"
-        self._pulse_angle = 0.0
-        self._particles: list[dict] = []
-        self._text = ""
-        self._audio_level = 0.0
-
-        # Animation timer — 60fps
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._animate)
-        self._timer.start(16)
-
-        self._init_particles()
+        self.animator.set_state("IDLE")
 
     @property
     def state(self) -> str:
@@ -80,111 +48,143 @@ class NovaOrb(QWidget):
     def state(self, new_state: str):
         if new_state != self._state:
             self._state = new_state
-            self._init_particles()
+            self.animator.set_state(new_state)
             self.state_changed.emit(new_state)
 
-    def set_text(self, text: str):
-        """Text to display inside the orb (e.g., 'YES?')."""
-        self._text = text
-
     def set_audio_level(self, level: float):
-        """Audio input level 0.0-1.0 for reactive effects."""
-        self._audio_level = max(0.0, min(1.0, level))
+        self.animator.set_audio_level(level)
 
-    def _init_particles(self):
-        """Create floating particles for the current state."""
-        self._particles = []
-        count = 12 if self._state != "IDLE" else 6
-        for _ in range(count):
-            self._particles.append({
-                "angle": random.uniform(0, 2 * math.pi),
-                "distance": random.uniform(0.55, 0.9),
-                "speed": random.uniform(0.003, 0.012),
-                "size": random.uniform(1.5, 3.5),
-                "alpha": random.randint(80, 200),
-                "orbit_speed": random.uniform(0.005, 0.02),
-            })
-
-    def _animate(self):
-        self._pulse_angle += STATE_PULSE_SPEED.get(self._state, 0.03)
-        for p in self._particles:
-            p["angle"] += p["orbit_speed"]
-        self.update()
-
+    # ------------------------------------------------------------------ paint
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        cx = self.width() / 2
-        cy = self.height() / 2
-        base_r = min(self.width(), self.height()) / 2 - 10
+        a = self.animator
+        cx, cy = self.width() / 2, self.height() / 2
+        base_r = (min(self.width(), self.height()) / 2) - 12
 
-        primary, secondary, glow_color = STATE_COLORS.get(
-            self._state, STATE_COLORS["IDLE"]
-        )
-
-        # Pulse factor
-        pulse = 1.0 + 0.04 * math.sin(self._pulse_angle)
-        if self._audio_level > 0:
-            pulse += self._audio_level * 0.15
+        # Pulse: breathing base + mic/speech influence per mode
+        pulse = a.pulse_amp
+        if a.mode == "listen":
+            pulse += a.audio_level * 0.10
+        elif a.mode == "speak":
+            pulse += a.speech_env * 0.10
+        elif a.mode == "error":
+            pulse += 0.03 * (1.0 if int(a.time * 3) % 2 == 0 else 0.0)
         r = base_r * pulse
 
-        # --- Outer glow ---
-        glow_r = r * 1.35
-        glow = QRadialGradient(QPointF(cx, cy), glow_r)
-        glow.setColorAt(0.0, QColor(glow_color))
-        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
-        painter.setBrush(QBrush(glow))
+        primary, secondary = a.primary, a.secondary
+        rot = math.radians(a.rotation)
+
+        # ---------------- Ambient glow ----------------
+        glow_r = r * 1.42
+        g = QRadialGradient(QPointF(cx, cy), glow_r)
+        c = QColor(primary); c.setAlpha(40 + int(30 * a.pulse_amp))
+        c2 = QColor(primary); c2.setAlpha(0)
+        g.setColorAt(0.0, c)
+        g.setColorAt(1.0, c2)
+        painter.setBrush(QBrush(g))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QPointF(cx, cy), glow_r, glow_r)
 
-        # --- Rotating ring ---
-        ring_rect = QRectF(cx - r, cy - r, r * 2, r * 2)
-        ring_gradient = QConicalGradient(QPointF(cx, cy), self._pulse_angle * 30)
-        ring_gradient.setColorAt(0.0, primary)
-        ring_gradient.setColorAt(0.5, secondary)
-        ring_gradient.setColorAt(1.0, primary)
-        painter.setPen(QPen(QBrush(ring_gradient), 2.5))
+        # ---------------- Energy mantle (rotating conic ring) ----------------
+        ring_r = r * 0.90
+        ring_rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
+        cone = QConicalGradient(QPointF(cx, cy), math.degrees(rot))
+        cone.setColorAt(0.0, primary)
+        cone.setColorAt(0.45, secondary)
+        cone.setColorAt(0.78, QColor(primary.red(), primary.green(), primary.blue(), 60))
+        cone.setColorAt(1.0, primary)
+        pen = QPen(QBrush(cone), 2.6)
+        painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(ring_rect)
 
-        # --- Orb body ---
-        body_r = r * 0.82
-        body_gradient = QRadialGradient(
-            QPointF(cx - body_r * 0.2, cy - body_r * 0.2), body_r
-        )
-        body_gradient.setColorAt(0.0, QColor(255, 255, 255, 40))
-        body_gradient.setColorAt(0.3, primary)
-        body_gradient.setColorAt(0.7, secondary)
-        body_gradient.setColorAt(1.0, QColor(0, 0, 0, 100))
+        # ---------------- Orb body ----------------
+        body_r = r * 0.78
+        body = QRadialGradient(QPointF(cx - body_r * 0.25, cy - body_r * 0.25), body_r * 1.15)
+        body.setColorAt(0.0, QColor(255, 255, 255, 50))
+        body.setColorAt(0.22, primary)
+        body.setColorAt(0.62, secondary)
+        body.setColorAt(1.0, QColor(2, 4, 12, 140))
+        painter.setBrush(QBrush(body))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(body_gradient))
         painter.drawEllipse(QPointF(cx, cy), body_r, body_r)
 
-        # --- Inner highlight ---
-        highlight_r = body_r * 0.5
-        highlight = QRadialGradient(
-            QPointF(cx - highlight_r * 0.3, cy - highlight_r * 0.4), highlight_r
-        )
-        highlight.setColorAt(0.0, QColor(255, 255, 255, 50))
-        highlight.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.setBrush(QBrush(highlight))
-        painter.drawEllipse(QPointF(cx, cy - body_r * 0.1), highlight_r, highlight_r)
+        # ---------------- Focal bright core ----------------
+        core_r = body_r * 0.44
+        core = QRadialGradient(QPointF(cx, cy), core_r)
+        core.setColorAt(0.0, QColor(236, 248, 255, 235))
+        core.setColorAt(0.55, QColor(primary.red(), primary.green(), primary.blue(), 180))
+        core.setColorAt(1.0, QColor(primary.red(), primary.green(), primary.blue(), 0))
+        painter.setBrush(QBrush(core))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QPointF(cx, cy), core_r, core_r)
 
-        # --- Floating particles ---
-        for p in self._particles:
-            px = cx + math.cos(p["angle"]) * r * p["distance"]
-            py = cy + math.sin(p["angle"]) * r * p["distance"]
-            particle_color = QColor(primary)
-            particle_color.setAlpha(int(p["alpha"] * pulse))
+        # ---------------- Filament arcs binding the core ----------------
+        fila_r = body_r * 0.62
+        fila_rect = QRectF(cx - fila_r, cy - fila_r, fila_r * 2, fila_r * 2)
+        for i in range(6):
+            start = math.degrees(rot) + i * 60
+            pen = QPen(QColor(secondary.red(), secondary.green(), secondary.blue(), 110))
+            pen.setWidthF(1.2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(fila_rect, int(start), 34)
+
+        # ---------------- Expanding burst arcs (PROCESSING) ----------------
+        if a.mode in ("process", "execute"):
+            for i in range(3):
+                t = ((a.time * 0.9 + i / 3.0) % 1.0)
+                burst_r = ring_r + t * (r * 0.55)
+                rect = QRectF(cx - burst_r, cy - burst_r, burst_r * 2, burst_r * 2)
+                pen = QPen(QColor(primary.red(), primary.green(), primary.blue(),
+                                 int(190 * (1.0 - t))))
+                pen.setWidthF(1.6)
+                painter.setPen(pen)
+                painter.drawArc(rect, int(math.degrees(rot) + i * 120), 46)
+
+        # ---------------- Progress arc (EXECUTING) ----------------
+        if a.mode == "execute":
+            prog_r = ring_r * 1.04
+            rect = QRectF(cx - prog_r, cy - prog_r, prog_r * 2, prog_r * 2)
+            pen = QPen(primary)
+            pen.setWidthF(3.2)
+            painter.setPen(pen)
+            painter.drawArc(rect, -90, int(-360 * a.progress))
+
+        # ---------------- Error glitch bars ----------------
+        if a.mode == "error":
+            glitch_r = body_r * 0.9
+            for i in range(2):
+                y = cy + (i - 0.5) * glitch_r * 0.5
+                pen = QPen(QColor(primary.red(), primary.green(), primary.blue(), 150))
+                pen.setWidthF(1.4)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(cx - glitch_r, y),
+                                 QPointF(cx + glitch_r, y))
+
+        # ---------------- Orbiting particles (deterministic) ----------------
+        particle_count = 10 if a.mode not in ("idle", "error") else 6
+        for i in range(particle_count):
+            ang = rot + i * (math.tau / particle_count) + a.time * (0.4 + i * 0.03)
+            pr = ring_r * (0.78 + 0.2 * math.sin(ang * 1.3 + i))
+            px = cx + math.cos(ang) * pr
+            py = cy + math.sin(ang) * pr
+            col = QColor(primary if i % 2 == 0 else secondary)
+            col.setAlpha(150)
+            painter.setBrush(QBrush(col))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(particle_color))
-            painter.drawEllipse(QPointF(px, py), p["size"], p["size"])
+            painter.drawEllipse(QPointF(px, py), 2.2, 2.2)
 
-        # --- Center text ---
-        if self._text:
-            painter.setPen(QPen(QColor(255, 255, 255, 200)))
-            font = QFont("Segoe UI", 14, QFont.Weight.Bold)
+        # ---------------- Center text ----------------
+        text = a.orb_text
+        if text:
+            painter.setPen(QPen(QColor(240, 250, 255, 235)))
+            font = QFont("Segoe UI Semibold", 15)
+            font.setBold(True)
             painter.setFont(font)
-            painter.drawText(QRectF(cx - body_r, cy - 15, body_r * 2, 30),
-                             Qt.AlignmentFlag.AlignCenter, self._text)
+            painter.drawText(QRectF(cx - body_r, cy - 16, body_r * 2, 32),
+                             Qt.AlignmentFlag.AlignCenter, text)
+
+        painter.end()
