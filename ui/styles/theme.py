@@ -108,6 +108,28 @@ QLabel#task_meta {{
     font-size: 10.5px;
 }}
 
+/* ===================== Privacy badges ===================== */
+QLabel#privacy_badge {{
+    color: {P["accent"]};
+    background-color: rgba(0, 233, 203, 0.08);
+    border: 1px solid rgba(0, 233, 203, 0.25);
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}}
+QLabel#privacy_badge_warn {{
+    color: #FBBF24;
+    background-color: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}}
+
 /* ===================== Buttons ===================== */
 QPushButton#mic_button {{
     background-color: rgba(0, 233, 203, 0.10);

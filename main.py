@@ -29,6 +29,10 @@ def main():
     log.info("STT=%s TTS=%s wake=%s", config.stt.provider, config.voice.provider,
              config.wake_word.word if config.wake_word.enabled else "OFF")
 
+    if config.debug:
+        log.warning("DEBUG MODE ENABLED — logs may include more detail. "
+                    "Secrets are still redacted at the sink.")
+
     window = MainWindow()
 
     # Center on primary screen

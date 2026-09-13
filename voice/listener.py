@@ -174,7 +174,8 @@ class Listener:
                         self._awaiting_command = False
 
                     self._emit_text(text)
-                    log.info("Captured: %s", text)
+                    log.info("Voice input received (audio level %.0f%%)",
+                             level * 100.0)
                 else:
                     self._emit_state("LISTENING")
 

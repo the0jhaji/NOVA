@@ -36,7 +36,6 @@ class GoogleSTT(STTProvider):
             audio = sr.AudioData(audio_data, sample_rate, 2)
             lang = self.language or "en-US"
             text = self.recognizer.recognize_google(audio, language=lang)
-            log.debug("Google STT result: %s", text)
             return text
         except sr.UnknownValueError:
             log.debug("Google STT: could not understand audio")
@@ -80,7 +79,6 @@ class WhisperSTT(STTProvider):
             result = self.model.transcribe(tmp_path)
             os.unlink(tmp_path)
             text = result.get("text", "").strip()
-            log.debug("Whisper STT result: %s", text)
             return text if text else None
         except Exception as e:
             log.error("Whisper STT failed: %s", e)

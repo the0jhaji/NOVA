@@ -678,3 +678,199 @@ the UI never blocks.
 ---
 
 **NOVA** — Phase 1 core voice + Aurora Core UI shipped; Phase 2 adds a secure, risk-gated Windows automation layer with verified execution; Phase 3 puts an original anime girl at the heart of the UI with a natural Indian female voice that follows your language.
+
+## 22. Privacy-First Local AI Brain (Phase 4)
+
+NOVA is now **private-by-default and local-first**. The assistant understands
+open-ended requests through an **on-device AI model** running under Ollama,
+while a privacy firewall decides everything that is ever allowed to leave this
+machine. This section is updated whenever privacy, AI, networking or
+data-handling changes.
+
+### 22.1 Design principles
+
+- **Local-first.** Conversations, planning and automation originate on your
+  computer. By default NOVA talks only to a model runtime on `localhost`.
+- **Private by default.** Cloud AI is OFF, telemetry is OFF, screen awareness
+  is OFF, voice audio is never stored. Nothing is ever uploaded automatically.
+- **Privacy by architecture, not by promise.** NOVA documents exactly what
+  data flows where and what happens if a component fails. It does **not**
+  claim to be "100% secure" — see the Threat Model in 22.10.
+- **Fail-closed.** Any network call that cannot be safely classified is
+  blocked. If the local model is unavailable, NOVA says so and simply does not
+  forward the request anywhere.
+
+### 22.2 Local AI (Ollama)
+
+The default AI brain runs a local model through [Ollama](https://ollama.com)
+and communicates over http://localhost:11434 (loopback only).
+
+```powershell
+# one-time setup
+ollama pull qwen3:8b          # or your preferred local model
+```
+
+Configuration in `.env`:
+
+```ini
+AI_PROVIDER=ollama
+LOCAL_MODEL=qwen3:8b
+LOCAL_AI_BASE_URL=http://localhost:11434
+LOCAL_AI_TIMEOUT=90
+LOCAL_AI_ALLOW_REMOTE=false     # keep true only for a network model runtime
+```
+
+The integration uses only the Python standard library (`urllib`). No extra
+pip packages, no cloud round-trips, no telemetry. Wrong model name or a
+stopped runtime simply report the model as unavailable.
+
+### 22.3 Model evaluation & recommendation
+
+| Model | License | Hindi/Indic | Tool calls | Local inference | RAM ~ | Verdict |
+|---|---|---|---|---|---|---|
+| **Qwen3 (qwen3:8b)** | Apache-2.0 | Strong (29+ langs) | Yes | Yes | ~6 GB | **Recommended default** |
+| gpt-oss:20b | Apache-2.0 | Moderate | Yes | Yes (MoE) | ~16 GB | Good if RAM allows |
+| Gemma | Apache-2.0 | Moderate | Partial | Yes | ~5-8 GB | Solid backup |
+| DeepSeek-R1 | Evaluate licensing for your use | See official docs | Partial | Yes | varies | Check terms before use |
+
+Selection criteria used: open/clear license, open weights, local inference,
+function/tool calling, reasoning, multilingual support (English + Hindi +
+Hinglish), hardware footprint, provenance/checksums, and security posture.
+When you change `LOCAL_MODEL`, verify the official source for the file and
+recommended checksums.
+
+### 22.4 Privacy defaults
+
+| Setting | Default | Where |
+|---|---|---|
+| Network mode | local-only | `PRIVACY_NETWORK_MODE` |
+| Cloud AI | OFF | `CLOUD_AI_ENABLED=false` |
+| Telemetry / diagnostics | OFF (opt-in) | `PRIVACY_TELEMETRY_ENABLED=false` |
+| Screen awareness | OFF | `PRIVACY_SCREEN_AWARENESS=false` |
+| Conversation retention | session (in-memory) | `PRIVACY_CONVERSATION_RETENTION` |
+| Auto-delete temporary files | ON | `PRIVACY_AUTO_DELETE_TEMP=true` |
+| Local AI endpoint | loopback only | `LOCAL_AI_ALLOW_REMOTE=false` |
+
+The main window shows a **LOCAL MODE** badge and, when enabled, a
+**SCREEN AWARENESS ACTIVE** indicator — you always know the current state.
+
+### 22.5 Cloud AI (opt-in and double-gated)
+
+Cloud AI is **OFF by default** and requires a deliberate act:
+
+1. Open **Settings → Privacy & Security → Cloud AI**.
+2. Toggle **Enable Cloud AI** — NOVA shows the mandatory warning:
+
+   > **Cloud AI is enabled. Some information may be sent to an external AI
+   > provider. Review Privacy Settings before continuing.**
+
+3. Click **"I UNDERSTAND — ENABLE CLOUD AI"** to approve it for this session.
+
+Even when enabled, NOVA **never auto-sends sensitive content** (passwords,
+API keys, secrets, JWT/credential shapes, sensitive `.env` values) to a cloud
+model — such requests are refused. There is **no silent cloud fallback**:
+if the local model fails, you hear *"Local AI is unavailable. I haven't sent
+your request to a cloud service."*
+
+### 22.6 NetworkManager
+
+Every outbound call passes a fail-closed decision service
+(`privacy/network_manager.py`):
+
+- `ALLOWED_LOCAL` — loopback/localhost only (always fine in local mode).
+- `ALLOWED_CLOUD` — only when network mode is `user-approved-cloud` AND Cloud
+  AI is enabled AND approved AND the scope (e.g. `ai`) is approved.
+- `BLOCKED` — anything else, including unknown scopes. No approval, no bytes.
+
+### 22.7 Privacy-safe logging & telemetry
+
+- Every log message is passed through a **redacting formatter** at the sink,
+  so `.env` secret values and credential shapes can never reach a log file
+  or console even if a bug slips.
+- Source logging never includes full transcripts, file contents or parameter
+  values: only neutral metadata (`Voice input received`, `Engine execute:
+  open_url (1 params)`).
+- Telemetry (`privacy/telemetry.py`) is **off by default**, opt-in, and only
+  records allowed aggregate fields (event, count, duration, provider name).
+  It never collects recordings, transcripts, screenshots, commands, file
+  contents or personal data.
+
+### 22.8 Data retention & Clear NOVA Data
+
+- **Conversations** default to `session` (in-memory only). `disk` persists
+  them locally under `data/conversations/`; `none` disables remembering.
+- **Voice recordings are never stored.**
+- **Screenshots are never stored** unless you explicitly request them.
+- **Temporary files** are auto-deleted when no longer needed.
+- **Settings → Privacy & Security → Clear NOVA Data** removes local
+  conversation history and temporary artifacts on demand (it never touches
+  `.env` or your installed models).
+
+### 22.9 Privacy & Security
+
+- All AI prompts are **redacted** of credentials before they reach a model,
+  and never include file contents or raw transcripts beyond what the user
+  said.
+- Local AI only talks to the configured loopback runtime; a remote runtime
+  requires an explicit `LOCAL_AI_ALLOW_REMOTE=true`.
+- Cloud API keys live only in `.env` (`CLOUD_AI_API_KEY`), are never logged,
+  and are never included in prompts.
+- AI-proposed actions are validated like any other: strict **tool
+  allowlist**, risk classification, and spoken confirmation for destructive
+  operations. High-risk actions never run silently — even on a local model
+  instruction.
+- Mic/screen status is visible in the UI; listening can be disabled instantly.
+- NOVA's own generated artifacts stay on-device. No analytics SDK, no
+  third-party tracking, no crash reports leave the machine unless you enable
+  telemetry.
+
+### 22.10 Threat Model
+
+NOVA's goal is **privacy by architecture** — it is not branded "100% secure",
+and no absolute guarantee is made. Threats and mitigations:
+
+| # | Threat | Mitigation |
+|---|---|---|
+| 1 | Malicious prompt ("please delete everything") | Risk gating + allowlisted tools + confirmation for destructive actions; high-risk phrasing refuses outright |
+| 2 | Prompt injection from a website/document | Model cannot run shell commands; proposed actions still pass the same allowlist + risk pipeline as typed commands |
+| 3 | Malicious downloads / apps | Software installs go through the Windows Package Manager with confirmation; NOVA never runs raw PowerShell/CMD from AI output |
+| 4 | Compromised model weights | Verify official source + checksum; license/limitations documented; you can swap `LOCAL_MODEL` at any time |
+| 5 | Malicious automation instruction | Every tool has typed parameters + a risk level; unknown tools are ignored; high-risk refusal is never silent |
+| 6 | Accidental data exposure (screenshots/logs) | Screen captures only on request/opt-in with a visible badge; logs redacted at the sink; recordings never stored |
+| 7 | Cloud leakage | Cloud AI off by default, double-gated (enable + session approve), sensitive-content refused for cloud, no silent fallback |
+| 8 | Credential exposure | `.env` secrets never logged or sent; redactor strips credential shapes before any prompt or log line |
+| 9 | Unauthorized screen capture | Screen awareness is off by default; badge indicator; capture only on explicit request |
+| 10 | Untrusted plugins/tools | Only the built-in audited tool set is executable; AI proposals are validated against the same set |
+
+Residual risks (documented, not hidden): a local model can still be fooled
+into *suggesting* a harmful action — defensive validation blocks execution;
+models, runtimes and dependencies themselves may contain vulnerabilities
+upstream; "privacy" applies to NOVA's behaviour, not to third-party software
+you already run.
+
+### 22.11 Testing
+
+```powershell
+python -X utf8 -m unittest discover -s tests   # 80 tests
+```
+
+Phase-4 coverage includes `tests/test_privacy_redaction.py`,
+`tests/test_network_manager.py`, `tests/test_ai_providers.py` (a fake
+loopback Ollama/OpenAI runtime on a random port) and `tests/test_brain_ai.py`
+(a stub provider) — proving fail-closed networking, no cloud fallback, and
+sensitive-content refusal without any real model or network.
+
+### 22.12 Roadmap update
+
+- **Phase 1** — Core voice + Aurora Core UI: shipped (1-19)
+- **Phase 2** — Secure risk-gated Windows automation: shipped (20)
+- **Phase 3** — Procedural anime character + Indian female voice: shipped (21)
+- **Phase 4** — Privacy-first local AI brain: shipped (22)
+- **Next** — Deeper agentic multi-step memory, vision ("what's on my
+  screen?"), browser automation, and refined emotion from voice/context.
+
+---
+
+**NOVA** — Phase 1 core voice + Aurora Core UI; Phase 2 a secure, risk-gated
+Windows automation layer; Phase 3 an original anime girl with a natural Indian
+female voice; **Phase 4 a local-first, privacy-by-default AI brain**.

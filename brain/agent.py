@@ -17,9 +17,18 @@ from typing import Optional, Tuple
 
 from utils.logger import log
 from automation import AutomationEngine, ActionStep, ActionPlan, RiskLevel
-from automation.safety import classify, classify_text_high_risk, classify_step
+from automation.safety import classify, classify_text_high_risk, classify_step, TOOL_BASE_RISK
 from automation.paths import resolve_location, default_folder
 from voice.language import detect_lang
+from ai import create_ai_provider, AIUnavailable, AIBlocked
+from privacy.redactor import redact_secrets, looks_sensitive
+from privacy.retention import append_conversation
+from privacy.telemetry import record as telemetry_record
+
+# Phrase used whenever the local model cannot run. NOVA never silently
+# forwards a request to a cloud provider.
+_LOCAL_UNAVAILABLE = ("Local AI is unavailable. I haven't sent your "
+                      "request to a cloud service.")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +102,9 @@ class NovaAgent:
         self.conversation_history: list[dict] = []
         self._context: dict = {}
         self._pending_plan: Optional[tuple[ActionPlan, str]] = None
+
+        # Local-first AI provider (None when disabled or cloud not approved).
+        self.ai = create_ai_provider()
 
         # Read by the UI to flash honest success/failure.
         self.last_action_ok: bool = False
@@ -300,18 +312,25 @@ class NovaAgent:
              "_handle_mouse"),
         ]
 
+    def _remember(self, role: str, text: str):
+        """Store a conversation entry per the privacy retention policy."""
+        ts = datetime.now().isoformat()
+        entry = {"role": role, "text": text, "timestamp": ts}
+        self.conversation_history.append(entry)
+        append_conversation(role, text, ts)   # no-op unless retention=disk
+
     # ------------------------------------------------------------------ flow
     def process(self, user_input: str) -> Tuple[str, str]:
         if not user_input or not user_input.strip():
             return ("I didn't catch that. Could you repeat?", "speak")
 
         text = user_input.strip()
-        log.info("Brain processing: %s", text)
+        log.info("User command received (%d chars)", len(text))
         self.last_user_lang = detect_lang(text)
-        self.conversation_history.append({
-            "role": "user", "text": text,
-            "timestamp": datetime.now().isoformat(),
-        })
+        self._remember("user", text)
+        telemetry_record("command_processed", count=1,
+                         provider=getattr(self.ai, "name", "none"),
+                         language=self.last_user_lang)
 
         # Explicit high-risk phrasing -> refusal, never silent.
         if classify_text_high_risk(text):
@@ -336,16 +355,96 @@ class NovaAgent:
                 response, action = handler(text)
                 return self._finish_and_return((response, action), text)
 
+        # Unknown intent -> local AI (no cloud fallback, ever).
+        return self._finish_and_return(self._handle_with_ai(text), text)
+
+    # ------------------------------------------------------------ AI flow
+    def _handle_with_ai(self, text: str) -> Tuple[str, str]:
+        provider = getattr(self, "ai", None)
+        if provider is None:
+            return self._fallback_unknown(text)
+
+        # Redact before anything reaches a model (local or cloud).
+        safe = redact_secrets(text)
+
+        if getattr(provider, "kind", "local") != "local":
+            blocked = self._cloud_privacy_guard(safe, text)
+            if blocked:
+                return blocked
+
+        try:
+            plan = provider.plan(safe)
+        except (AIUnavailable, AIBlocked):
+            self.last_action_ok = False
+            self.last_action_summary = "Local AI unavailable"
+            telemetry_record("ai_unavailable", provider=provider.name)
+            return (_LOCAL_UNAVAILABLE, "speak")
+        except Exception as e:
+            log.warning("AI plan failed: %s", e)
+            return self._fallback_unknown(text)
+        telemetry_record("ai_plan", provider=provider.name,
+                         count=1 if plan else 0)
+
+        if not plan:
+            return self._fallback_unknown(text)
+
+        if plan.get("intent") == "chat":
+            return self._chat_from_model(plan.get("message", ""))
+
+        # Structured tool proposal -> reuse the deterministic pipeline so
+        # every action still passes allowlist + risk classification.
+        tool, params = plan.get("tool", ""), plan.get("params", {})
+        if str(tool) not in TOOL_BASE_RISK:
+            return self._fallback_unknown(text)
+        risk = classify(text, tool, params)
+        if risk >= RiskLevel.HIGH_RISK:
+            self.last_action_ok = False
+            self.last_action_summary = "Blocked high-risk AI action"
+            return ("I won't do that automatically \u2014 it's a high-risk "
+                    "action, even coming from a local model.", "speak")
+
+        step = ActionStep(tool, params, label=f"{tool} (planned by AI)",
+                          risk=risk)
+        return self._run_ai_step(step, text)
+
+    def _run_ai_step(self, step: ActionStep, text: str) -> Tuple[str, str]:
+        if step.risk >= RiskLevel.CONFIRMATION_REQUIRED:
+            plan = ActionPlan(steps=[step], rationale="planned by local AI")
+            ask = ("This needs your confirmation before I run it. "
+                   "Say yes to confirm, or say cancel.")
+            return self._stage_confirmation(plan, ask)
+        response = self._run([step], text)
+        return (response, "execute")
+
+    def _cloud_privacy_guard(self, safe: str, raw: str):
+        """Extra gate: sensitive content never auto-sends to a cloud model,
+        even when Cloud AI is enabled. Refuses rather than transmits.
+        `raw` (pre-redaction) is what determines sensitivity — redaction
+        must not launder a secret past the firewall."""
+        if looks_sensitive(raw or safe):
+            self.last_action_ok = False
+            self.last_action_summary = "Sensitive content not sent to cloud"
+            return (
+                "That request looks sensitive, so I won't send it to a "
+                "cloud model. Enable local AI (Ollama) to handle it on "
+                "this machine.", "speak")
+        return None
+
+    def _chat_from_model(self, message: str) -> Tuple[str, str]:
+        if not (message or "").strip():
+            return self._fallback_unknown("")
+        self.last_action_ok = True
+        self.last_action_summary = "Replied"
+        return (message, "speak")
+
+    def _fallback_unknown(self, text: str) -> Tuple[str, str]:
         response = self._handle_unknown(text)
-        return self._finish_and_return((response, "speak"), text)
+        return (response, "speak")
 
     def _log_response(self, response: str, action: str, text: str = ""):
-        self.conversation_history.append({
-            "role": "nova", "text": response,
-            "timestamp": datetime.now().isoformat(),
-        })
-        log.info("Response: %s (action=%s)%s", response, action,
-                 f" for: {text}" if text else "")
+        self._remember("nova", response)
+        # Log metadata only — never the reply body.
+        log.info("Reply ready (action=%s, %d chars)", action, len(response))
 
     def _finish_and_return(self, result: Tuple[str, str], text: str) -> Tuple[str, str]:
         # Natural success prefix in the user's language (only after a

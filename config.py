@@ -129,15 +129,70 @@ class AutomationConfig:
 
 
 @dataclass(frozen=True)
+class AIConfig:
+    """
+    Local-first AI brain settings.
+
+    - ai_provider:      "ollama" (default, local) | "cloud" | "none".
+    - local_model:      Ollama model tag. Default qwen3:8b (Apache-2.0,
+                        strong Hindi + English + Hinglish, tool calling).
+                        Change freely — never hard-coded permanently.
+    - local_base_url:   Model runtime endpoint (localhost by default). NOVA
+                        only talks to loopback for the local provider unless
+                        allow_remote_local_model is explicitly true.
+    - cloud_enabled:    CLOUD_AI master switch. FALSE BY DEFAULT. Enabling
+                        requires explicit user confirmation in Privacy settings.
+    - cloud_provider:   "openai-compatible" (generic OpenAI-style endpoint).
+    - cloud_api_key:    Stored in .env, NEVER logged and NEVER injected into
+                        prompts (see privacy/redactor.py).
+    """
+    ai_provider: str = field(default_factory=lambda: _env("AI_PROVIDER", "ollama"))
+    local_model: str = field(default_factory=lambda: _env("LOCAL_MODEL", "qwen3:8b"))
+    local_base_url: str = field(default_factory=lambda: _env("LOCAL_AI_BASE_URL", "http://localhost:11434"))
+    local_timeout: int = field(default_factory=lambda: int(_env("LOCAL_AI_TIMEOUT", "90")))
+    allow_remote_local_model: bool = field(default_factory=lambda: _env_bool("LOCAL_AI_ALLOW_REMOTE", False))
+    cloud_enabled: bool = field(default_factory=lambda: _env_bool("CLOUD_AI_ENABLED", False))
+    cloud_provider: str = field(default_factory=lambda: _env("CLOUD_AI_PROVIDER", "openai-compatible"))
+    cloud_base_url: str = field(default_factory=lambda: _env("CLOUD_AI_BASE_URL", ""))
+    cloud_model: str = field(default_factory=lambda: _env("CLOUD_AI_MODEL", ""))
+    cloud_api_key: str = field(default_factory=lambda: _env("CLOUD_AI_KEY", ""))
+
+
+@dataclass(frozen=True)
+class PrivacyConfig:
+    """
+    Privacy boundary defaults (all local-first, private by default).
+
+    - network_mode:         "local-only" (default) | "user-approved-cloud" |
+                            "blocked". Every external network operation is
+                            decided by the NetworkManager, not the caller.
+    - telemetry_enabled:    FALSE BY DEFAULT. Diagnostics are opt-in only.
+    - screen_awareness:     Screen capture may only happen on request / for a
+                            task / when this opt-in flag is enabled.
+    - conversation_retention: "session" (default, in-memory only) | "none" |
+                            "disk" (explicit opt-in persistence).
+    - auto_delete_temp:     Automatically remove temporary artifacts when they
+                            are no longer required.
+    """
+    network_mode: str = field(default_factory=lambda: _env("PRIVACY_NETWORK_MODE", "local-only").lower())
+    telemetry_enabled: bool = field(default_factory=lambda: _env_bool("PRIVACY_TELEMETRY_ENABLED", False))
+    screen_awareness: bool = field(default_factory=lambda: _env_bool("PRIVACY_SCREEN_AWARENESS", False))
+    conversation_retention: str = field(default_factory=lambda: _env("PRIVACY_CONVERSATION_RETENTION", "session").lower())
+    auto_delete_temp: bool = field(default_factory=lambda: _env_bool("PRIVACY_AUTO_DELETE_TEMP", True))
+
+
+@dataclass(frozen=True)
 class NovaConfig:
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     voice: VoiceConfig = field(default_factory=VoiceConfig)
+    ai: AIConfig = field(default_factory=AIConfig)
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", False))
     app_name: str = "NOVA"
-    app_version: str = "0.3.0"
+    app_version: str = "0.4.0"
 
 
 # Singleton config instance

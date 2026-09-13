@@ -40,10 +40,12 @@ from ui.waveform import WaveformWidget
 from ui.glass import GlassPanel, SectionTitle, FlashChip
 from ui.styles.theme import QSS as THEME_QSS
 from ui.settings_dialog import SettingsDialog
+from ui.privacy_dialog import PrivacyDialog
 from voice.listener import Listener
 from voice.controller import voice as voice_ctl
 from voice.language import detect_lang
 from brain.agent import NovaAgent
+from privacy.state import privacy_state, NETWORK_LOCAL_ONLY
 
 STATE_LABELS = {
     "IDLE": "READY",
@@ -264,6 +266,19 @@ class MainWindow(QMainWindow):
         ai_row.addStretch()
         lay.addLayout(ai_row)
 
+        # Privacy badges: LOCAL MODE + SCREEN AWARENESS
+        badges = QHBoxLayout()
+        badges.setSpacing(8)
+        self.local_badge = QLabel("⬢  LOCAL MODE")
+        self.local_badge.setObjectName("privacy_badge")
+        badges.addWidget(self.local_badge)
+        self.screen_badge = QLabel("👁  SCREEN AWARENESS ACTIVE")
+        self.screen_badge.setObjectName("privacy_badge_warn")
+        self.screen_badge.setVisible(False)
+        badges.addWidget(self.screen_badge)
+        badges.addStretch()
+        lay.addLayout(badges)
+
         sep = QFrame(); sep.setFixedHeight(1)
         sep.setStyleSheet("background-color: rgba(255,255,255,0.06);")
         lay.addWidget(sep)
@@ -277,6 +292,26 @@ class MainWindow(QMainWindow):
                                      f"{config.wake_word.word.upper()} · "
                                      f"{'ON' if config.wake_word.enabled else 'OFF'}")
         self.sys_latency = self._add_row(lay, "LATENCY", "—")
+
+        # Privacy rows
+        self.sys_network = self._add_row(lay, "NETWORK",
+                                         privacy_state.network_mode.upper())
+        self.sys_cloud = self._add_row(
+            lay, "CLOUD AI",
+            "ON" if privacy_state.is_cloud_active() else "OFF")
+        self.sys_retention = self._add_row(
+            lay, "KEEP HISTORY",
+            privacy_state.conversation_retention.upper())
+
+        priv_row = QHBoxLayout()
+        priv_row.addStretch()
+        priv_btn = QPushButton("🔒  PRIVACY & SECURITY")
+        priv_btn.setObjectName("settings_button")
+        priv_btn.clicked.connect(self._open_privacy)
+        priv_row.addWidget(priv_btn)
+        lay.addLayout(priv_row)
+
+        self._update_privacy_ui()
 
         lay.addSpacing(8)
         hint = QLabel(
@@ -544,6 +579,20 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self)
         dlg.exec()
+
+    def _open_privacy(self):
+        dlg = PrivacyDialog(self)
+        dlg.exec()
+        self._update_privacy_ui()
+
+    def _update_privacy_ui(self):
+        """Refresh network/cloud/retention rows and the privacy badges."""
+        state = privacy_state
+        self.sys_network.setText(state.network_mode.upper())
+        self.sys_cloud.setText("ON" if state.is_cloud_active() else "OFF")
+        self.sys_retention.setText(state.conversation_retention.upper())
+        self.local_badge.setVisible(state.network_mode == NETWORK_LOCAL_ONLY)
+        self.screen_badge.setVisible(state.screen_awareness)
 
     # ------------------------------------------------------------------ helpers
     def _set_connection(self, online: bool):

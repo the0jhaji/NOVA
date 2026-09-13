@@ -3,12 +3,29 @@ NOVA Voice Assistant - Logger
 Centralized logging with file and console output.
 Handles Unicode safely (Windows consoles often use cp1252 which
 cannot encode Devanagari, emoji, etc.).
+
+Privacy: every message is passed through a redacting formatter at the
+sink, so secrets (.env values, API keys, bearer tokens, JWT shapes) can
+never reach a log file or console even if a caller slips.
+The source code never logs full microphone transcripts or file contents.
 """
 
 import logging
 import sys
 from pathlib import Path
 from datetime import datetime
+
+
+class RedactingFormatter(logging.Formatter):
+    """Formats a record then strips secrets from the final text."""
+
+    def format(self, record: logging.LogRecord):
+        text = super().format(record)
+        try:
+            from privacy.redactor import redact_secrets
+            return redact_secrets(text)
+        except Exception:
+            return text
 
 
 class SafeConsoleHandler(logging.StreamHandler):
@@ -41,7 +58,7 @@ def setup_logger(name: str = "nova", level: int = logging.DEBUG) -> logging.Logg
         return logger
 
     logger.setLevel(level)
-    fmt = logging.Formatter(
+    fmt = RedactingFormatter(
         "[%(asctime)s] %(levelname)-8s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )

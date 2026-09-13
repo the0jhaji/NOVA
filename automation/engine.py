@@ -73,7 +73,7 @@ class AutomationEngine:
             # --- risk gate ---
             if step.risk >= RiskLevel.HIGH_RISK:
                 if getattr(config.automation, "allow_high_risk", False) and approved:
-                    log.warning("HIGH_RISK step approved by config+user: %s", step.describe())
+                    log.warning("HIGH_RISK step approved by config+user: tool=%s", step.tool)
                 else:
                     msg = (
                         "That action is too risky for me to perform, even with your confirmation."
@@ -122,7 +122,7 @@ class AutomationEngine:
                 tool=tool_name, success=False, verified=False,
                 message=f"I don't know how to run that tool.",
             )
-        log.info("Engine execute: %s  params=%s", tool_name, params)
+        log.info("Engine execute: %s (%d params)", tool_name, len(params or {}))
         try:
             tr = runner(params_with_tool)
         except Exception as exc:
