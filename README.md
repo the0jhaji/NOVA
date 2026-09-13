@@ -866,11 +866,84 @@ sensitive-content refusal without any real model or network.
 - **Phase 2** — Secure risk-gated Windows automation: shipped (20)
 - **Phase 3** — Procedural anime character + Indian female voice: shipped (21)
 - **Phase 4** — Privacy-first local AI brain: shipped (22)
-- **Next** — Deeper agentic multi-step memory, vision ("what's on my
-  screen?"), browser automation, and refined emotion from voice/context.
+- **Phase 5** — Companion mode, local memory & browser automation: shipped (23)
+- **Next** — Deeper agentic multi-step workflows, vision ("what's on my
+  screen?"), and refined emotion from voice/context.
 
 ---
 
 **NOVA** — Phase 1 core voice + Aurora Core UI; Phase 2 a secure, risk-gated
 Windows automation layer; Phase 3 an original anime girl with a natural Indian
-female voice; **Phase 4 a local-first, privacy-by-default AI brain**.
+female voice; **Phase 4 a local-first, privacy-by-default AI brain**;
+**Phase 5 desktop companion mode with persistent local memory and real
+browser automation**.
+
+---
+
+## 23. Phase 5 — Companion, Memory & Browser Automation
+
+Phase 5 turns NOVA from a floating orb into a full desktop companion that
+remembers you and can act on the live web, while staying 100% local.
+
+### 23.1 Desktop companion & minimal orb
+
+- **◉ COMPANION** dock button opens a small frameless, always-on-top window
+  showing the anime character next to the main command center (the avatar is
+  cropped from the same 560×470 stage — no second animation copy).
+- **● MINIMAL** shrinks NOVA to a 112×112 pulsing orb that sits anywhere on
+  screen.
+- Drag the window by its surface; **double-click restores the full UI**;
+  the ✕/◉/⛶ buttons in the companion window close, minimize, or re-full the
+  companion.
+- All views share the **same `NovaStateAnimator`**, so emotional states stay
+  in sync across companion, minimal orb, and main window.
+
+### 23.2 Persistent local memory
+
+- Facts live in a **local SQLite store** (`data/memory.db`) or in a
+  session-only dict store when memory scope is `session`.
+- Say *"my name is Priya"*, *"remember that I drink coffee"*,
+  *"yaad rakho main chai peeta hoon"*, *"I mostly use VS Code"* — NOVA stores
+  it and answers *"what do you remember?"* with the saved facts.
+- Memory is injected into the AI brain's prompt **only when the model is
+  local**; cloud requests never carry remembered facts.
+- **Secrets never enter memory**: anything matching the privacy redactor's
+  credential patterns (API keys, passwords, bearer tokens, …) or keyed with
+  sensitive names is refused.
+- The 🧠 button in the system rows opens **MemoryDialog** to browse, delete,
+  or wipe remembered items; `_update_memory_ui` shows the live count.
+
+### 23.3 Browser automation (real, via CDP)
+
+- Uses the **Chrome DevTools Protocol over a pure-stdlib WebSocket client**
+  (no new dependencies) to drive the installed Edge or Chrome.
+- Handlers: *"open example.com"*, *"search for rain songs on YouTube"*,
+  *"read this page"*, *"scroll down"*, *"click the button"*, *"type hello"*.
+- Safety: opening, searching, reading and scrolling are SAFE; **clicking and
+  typing require explicit confirmation** (`TOOL_BASE_RISK`). Page text read
+  back is always labelled **untrusted** and can never authorize privileged
+  actions.
+
+### 23.4 Configuration
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `MEMORY_ENABLED` | `true` | Turn persistent memory on/off |
+| `MEMORY_SCOPE` | `persistent` | `persistent` = SQLite, `session` = in-memory |
+| `MEMORY_DB_PATH` | `data/memory.db` | SQLite file location |
+| `BROWSER_AUTOMATION_ENABLED` | `true` | Allow browser automation |
+| `BROWSER_CHANNEL` | `edge` | `edge`, `chrome`, or `auto` |
+| `BROWSER_HEADLESS` | `false` | Launch browser without a window |
+| `BROWSER_CDP_PORT` | `9223` | CDP debugging port |
+| `BROWSER_USER_DATA_DIR` | *(temp)* | Profile dir (temp when blank) |
+
+Version bumped to **0.5.0**.
+
+### 23.5 Testing
+
+`tests/test_memory.py`, `tests/test_brain_memory.py` and
+`tests/test_browser_tools.py` cover store persistence/refusal, memory
+injection privacy (local yes / cloud no), tool registry + risk gating, and a
+real headless CDP round trip (auto-skipped when no browser is installed).
+Suite: **112 tests green**, plus the offscreen companion smoke test carried
+out with `QT_QPA_PLATFORM=offscreen`.

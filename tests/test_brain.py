@@ -161,5 +161,70 @@ class BrainIntentTests(unittest.TestCase):
         self.assertEqual(action, "quit")
 
 
+class YouTubeVideoIntentTests(unittest.TestCase):
+    """Video/YouTube requests must go to the browser, never open_application."""
+
+    def setUp(self):
+        self.calls = []
+        self.engine = AutomationEngine()
+        self.agent = NovaAgent(automation=self.engine)
+        for tool in ("open_application", "browser_open_url", "browser_search"):
+            self.engine.register_tool(
+                tool, lambda p, t=tool: self._record(t, p))
+
+    def _record(self, name, params):
+        self.calls.append((name, dict(params)))
+        return ToolResult(tool=name, success=True, verified=True,
+                          message=f"{name}:ok")
+
+    def tool_calls(self, name):
+        return [{k: v for k, v in p.items() if k != "tool"}
+                for t, p in self.calls if t == name]
+
+    def test_open_a_video_in_youtube_opens_youtube(self):
+        resp, action = self.agent.process("open a video in YouTube")
+        self.assertEqual(action, "execute")
+        urls = self.tool_calls("browser_open_url")
+        self.assertEqual(len(urls), 1)
+        self.assertEqual(urls[0]["url"], "youtube.com")
+        self.assertEqual(self.tool_calls("open_application"), [])
+
+    def test_open_a_video_on_youtube_opens_youtube(self):
+        resp, action = self.agent.process("open a video on YouTube")
+        self.assertEqual(action, "execute")
+        self.assertEqual(self.tool_calls("browser_open_url")[0]["url"],
+                         "youtube.com")
+
+    def test_watch_a_video_opens_youtube(self):
+        resp, action = self.agent.process("watch a video on youtube")
+        self.assertEqual(action, "execute")
+        self.assertEqual(self.tool_calls("browser_open_url")[0]["url"],
+                         "youtube.com")
+
+    def test_play_title_on_youtube_searches(self):
+        resp, action = self.agent.process("play baby shark on YouTube")
+        self.assertEqual(action, "execute")
+        searches = self.tool_calls("browser_search")
+        self.assertEqual(len(searches), 1)
+        self.assertEqual(searches[0], {"query": "baby shark",
+                                       "engine": "youtube"})
+
+    def test_play_title_video_on_youtube_searches(self):
+        resp, action = self.agent.process(
+            "play cricket highlights video on youtube")
+        self.assertEqual(action, "execute")
+        searches = self.tool_calls("browser_search")
+        self.assertEqual(len(searches), 1)
+        self.assertEqual(searches[0]["query"], "cricket highlights")
+        self.assertEqual(searches[0]["engine"], "youtube")
+
+    def test_open_app_still_opens_app(self):
+        resp, action = self.agent.process("open chrome")
+        self.assertEqual(action, "execute")
+        self.assertEqual(len(self.tool_calls("open_application")), 1)
+        self.assertEqual(self.tool_calls("open_application")[0]["name"],
+                         "chrome")
+
+
 if __name__ == "__main__":
     unittest.main()

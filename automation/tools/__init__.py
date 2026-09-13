@@ -12,7 +12,7 @@ from automation.result import ToolResult
 from automation.tools import apps as _apps, folders as _folders, files as _files
 from automation.tools import urls as _urls, screen as _screen
 from automation.tools import input_tools as _input, systools as _systools
-from automation.tools import install as _install
+from automation.tools import install as _install, browser as _browser_tools
 
 
 def _dispatch(params: dict) -> ToolResult:
@@ -63,6 +63,18 @@ def _dispatch(params: dict) -> ToolResult:
         )
     if tool == "install_software":
         return _install.install_software(params.get("package", ""))
+    if tool == "browser_open_url":
+        return _browser_tools.browser_open_url(params)
+    if tool == "browser_search":
+        return _browser_tools.browser_search(params)
+    if tool == "browser_read":
+        return _browser_tools.browser_read(params)
+    if tool == "browser_scroll":
+        return _browser_tools.browser_scroll(params)
+    if tool == "browser_click":
+        return _browser_tools.browser_click(params)
+    if tool == "browser_type":
+        return _browser_tools.browser_type(params)
     return ToolResult(
         tool=tool or "unknown", success=False, verified=False,
         message="That tool is not available.",
@@ -81,6 +93,8 @@ _ALL_TOOLS = [
     "search_files", "delete_file", "take_screenshot",
     "type_text", "press_key", "mouse_click",
     "volume_control", "install_software",
+    "browser_open_url", "browser_search", "browser_read",
+    "browser_scroll", "browser_click", "browser_type",
 ]
 
 

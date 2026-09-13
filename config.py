@@ -182,6 +182,43 @@ class PrivacyConfig:
 
 
 @dataclass(frozen=True)
+class MemoryConfig:
+    """
+    Local persistent memory (SQLite) for preferences and context.
+
+    - enabled:  MEMORY_ENABLED. Master switch for NOVA remembering things.
+    - scope:    "persistent" (default; saved on disk) | "session" (in-memory
+                only, forgotten on exit).
+    Memory never stores passwords, tokens, private keys or API secrets; the
+    store refuses them via the privacy redactor.
+    """
+    enabled: bool = field(default_factory=lambda: _env_bool("MEMORY_ENABLED", True))
+    scope: str = field(default_factory=lambda: _env("MEMORY_SCOPE", "persistent").lower())
+    db_path: str = field(default_factory=lambda: _env("MEMORY_DB_PATH", ""))
+
+
+@dataclass(frozen=True)
+class BrowserConfig:
+    """
+    Browser automation via Chrome DevTools Protocol (stdlib, no new deps).
+
+    - enabled:          BROWSER_AUTOMATION_ENABLED. If False, browser tools
+                        report that they are unavailable.
+    - channel:          "edge" (default) | "chrome". First launchable browser
+                        found is used when set to "auto".
+    - headless:         BROWSER_BROWSER_HEADLESS. Production default False so
+                        the user sees what NOVA does; tests use headless.
+    - port:             local CDP debug port (never exposed publicly).
+    - user_data_dir:    temp profile dir; '' = auto temp directory.
+    """
+    enabled: bool = field(default_factory=lambda: _env_bool("BROWSER_AUTOMATION_ENABLED", True))
+    channel: str = field(default_factory=lambda: _env("BROWSER_CHANNEL", "edge").lower())
+    headless: bool = field(default_factory=lambda: _env_bool("BROWSER_HEADLESS", False))
+    port: int = field(default_factory=lambda: int(_env("BROWSER_CDP_PORT", "9223")))
+    user_data_dir: str = field(default_factory=lambda: _env("BROWSER_USER_DATA_DIR", ""))
+
+
+@dataclass(frozen=True)
 class NovaConfig:
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
@@ -190,9 +227,11 @@ class NovaConfig:
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", False))
     app_name: str = "NOVA"
-    app_version: str = "0.4.0"
+    app_version: str = "0.5.0"
 
 
 # Singleton config instance

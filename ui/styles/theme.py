@@ -190,6 +190,39 @@ QPushButton#settings_button:hover {{
     background-color: rgba(0, 233, 203, 0.08);
 }}
 
+QPushButton#companion_btn {{
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 9px;
+    color: {P["text_muted"]};
+    font-size: 13px;
+    min-width: 26px;
+    max-width: 26px;
+    padding: 2px 0px;
+}}
+QPushButton#companion_btn:hover {{
+    color: {P["accent"]};
+    border-color: rgba(0, 233, 203, 0.4);
+}}
+QPushButton#companion_btn_dock {{
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 12px;
+    color: {P["text_muted"]};
+    padding: 6px 12px;
+    font-size: 12.5px;
+}}
+QPushButton#companion_btn_dock:hover {{
+    color: {P["accent"]};
+    border-color: rgba(0, 233, 203, 0.4);
+    background-color: rgba(0, 233, 203, 0.08);
+}}
+QPushButton#companion_btn_dock:checked {{
+    color: {P["accent"]};
+    border-color: rgba(0, 233, 203, 0.6);
+    background-color: rgba(0, 233, 203, 0.12);
+}}
+
 QPushButton#title_min, QPushButton#title_close {{
     background: transparent;
     border: none;

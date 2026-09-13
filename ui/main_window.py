@@ -41,6 +41,8 @@ from ui.glass import GlassPanel, SectionTitle, FlashChip
 from ui.styles.theme import QSS as THEME_QSS
 from ui.settings_dialog import SettingsDialog
 from ui.privacy_dialog import PrivacyDialog
+from ui.memory_dialog import MemoryDialog
+from ui.companion import CompanionWindow, MinimalOrb
 from voice.listener import Listener
 from voice.controller import voice as voice_ctl
 from voice.language import detect_lang
@@ -302,14 +304,25 @@ class MainWindow(QMainWindow):
         self.sys_retention = self._add_row(
             lay, "KEEP HISTORY",
             privacy_state.conversation_retention.upper())
+        self.sys_memory = self._add_row(
+            lay, "MEMORY",
+            "ON" if config.memory.enabled else "OFF")
+        self.sys_browser = self._add_row(
+            lay, "BROWSER",
+            "ON" if config.browser.enabled else "OFF")
 
-        priv_row = QHBoxLayout()
-        priv_row.addStretch()
+        rows = QHBoxLayout()
+        rows.setSpacing(8)
+        mem_btn = QPushButton("🧠  MEMORY")
+        mem_btn.setObjectName("settings_button")
+        mem_btn.clicked.connect(self._open_memory)
         priv_btn = QPushButton("🔒  PRIVACY & SECURITY")
         priv_btn.setObjectName("settings_button")
         priv_btn.clicked.connect(self._open_privacy)
-        priv_row.addWidget(priv_btn)
-        lay.addLayout(priv_row)
+        rows.addWidget(mem_btn)
+        rows.addWidget(priv_btn)
+        rows.addStretch()
+        lay.addLayout(rows)
 
         self._update_privacy_ui()
 
@@ -360,6 +373,22 @@ class MainWindow(QMainWindow):
         send.setObjectName("send_button")
         send.clicked.connect(self._send_text)
         dock.addWidget(send)
+
+        self.companion_btn = QPushButton("◉  COMPANION")
+        self.companion_btn.setObjectName("companion_btn_dock")
+        self.companion_btn.setCheckable(True)
+        self.companion_btn.setChecked(False)
+        self.companion_btn.setToolTip("Float NOVA as a small anime character")
+        self.companion_btn.clicked.connect(self._toggle_companion)
+        dock.addWidget(self.companion_btn)
+
+        self.minimal_btn = QPushButton("●  MINIMAL")
+        self.minimal_btn.setObjectName("companion_btn_dock")
+        self.minimal_btn.setCheckable(True)
+        self.minimal_btn.setChecked(False)
+        self.minimal_btn.setToolTip("Tiny orb that barely uses the screen")
+        self.minimal_btn.clicked.connect(self._toggle_minimal)
+        dock.addWidget(self.minimal_btn)
 
         return dock
 
@@ -584,6 +613,74 @@ class MainWindow(QMainWindow):
         dlg = PrivacyDialog(self)
         dlg.exec()
         self._update_privacy_ui()
+
+    def _open_memory(self):
+        dlg = MemoryDialog(self)
+        dlg.exec()
+        self._update_memory_ui()
+
+    def _update_memory_ui(self):
+        self.sys_memory.setText("ON" if config.memory.enabled else "OFF")
+        if config.memory.enabled:
+            from memory import memory_store
+            n = memory_store.count()
+            self.sys_memory.setText(f"ON \u00b7 {n}")
+
+    # ------------------------------------------------------- display modes
+    def _toggle_companion(self, checked: bool):
+        if checked:
+            self._enter_companion()
+        else:
+            self._restore_full()
+        self.minimal_btn.setChecked(False)
+
+    def _toggle_minimal(self, checked: bool):
+        if checked:
+            self._enter_minimal()
+        else:
+            self._restore_full()
+        self.companion_btn.setChecked(False)
+
+    def _close_mode_windows(self):
+        for attr in ("_companion", "_orb"):
+            win = getattr(self, attr, None)
+            if win is not None:
+                try:
+                    win.close()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self.companion_btn.setChecked(False)
+        self.minimal_btn.setChecked(False)
+
+    def _enter_companion(self):
+        self._close_mode_windows()
+        comp = CompanionWindow(self.animator)
+        comp.restore_full_requested.connect(self._restore_full)
+        comp.minimal_requested.connect(self._enter_minimal)
+        comp.close_requested.connect(self._restore_full)
+        comp.on_state(self.animator.state, STATE_CAPTIONS.get(self.animator.state, ""))
+        self.bridge.state_changed.connect(
+            lambda s: comp.on_state(s, STATE_CAPTIONS.get(s, "")))
+        comp.show()
+        self._companion = comp
+        self.companion_btn.setChecked(True)
+        self.hide()
+
+    def _enter_minimal(self):
+        self._close_mode_windows()
+        orb = MinimalOrb(self.animator)
+        orb.restore_full_requested.connect(self._restore_full)
+        orb.show()
+        self._orb = orb
+        self.minimal_btn.setChecked(True)
+        self.hide()
+
+    def _restore_full(self):
+        self._close_mode_windows()
+        self.show()
+        self.raise_()
+        self._set_state(self.animator.state)
 
     def _update_privacy_ui(self):
         """Refresh network/cloud/retention rows and the privacy badges."""

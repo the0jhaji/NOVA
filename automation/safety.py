@@ -39,6 +39,14 @@ TOOL_BASE_RISK = {
     "volume_control": RiskLevel.SAFE,
     "delete_file": RiskLevel.CONFIRMATION_REQUIRED,
     "install_software": RiskLevel.CONFIRMATION_REQUIRED,
+    # Browser: navigation/reading is safe; clicking and typing mutate the
+    # live web page, so they always require explicit confirmation.
+    "browser_open_url": RiskLevel.SAFE,
+    "browser_search": RiskLevel.SAFE,
+    "browser_read": RiskLevel.SAFE,
+    "browser_scroll": RiskLevel.SAFE,
+    "browser_click": RiskLevel.CONFIRMATION_REQUIRED,
+    "browser_type": RiskLevel.CONFIRMATION_REQUIRED,
     # High-risk tools are *defined* for gating but none of the high-risk
     # operations are implemented. If ever wired up, these must remain
     # HIGH_RISK and respect AUTOMATION_ALLOW_HIGH_RISK.
